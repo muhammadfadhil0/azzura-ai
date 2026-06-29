@@ -15,7 +15,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, description, created_at, updated_at')
+    .select('id, name, description, icon, created_at, updated_at')
     .order('updated_at', { ascending: false })
 
   if (error) return jsonError(error.message, 500)
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return jsonError('Unauthorized', 401)
 
-  let body: { name?: string; description?: string }
+  let body: { name?: string; description?: string; icon?: string }
   try {
     body = await req.json()
   } catch {
@@ -36,11 +36,12 @@ export async function POST(req: NextRequest) {
 
   const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'New Project'
   const description = typeof body.description === 'string' ? body.description.trim() : null
+  const icon = typeof body.icon === 'string' && body.icon.trim() ? body.icon.trim() : null
 
   const { data, error } = await supabase
     .from('projects')
-    .insert({ user_id: user.id, name, description })
-    .select('id, name, description, created_at, updated_at')
+    .insert({ user_id: user.id, name, description, icon })
+    .select('id, name, description, icon, created_at, updated_at')
     .single()
 
   if (error) return jsonError(error.message, 500)

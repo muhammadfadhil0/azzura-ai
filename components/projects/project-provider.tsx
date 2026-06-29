@@ -18,7 +18,7 @@ interface ProjectState {
   uploadProjectDocument: (file: File) => Promise<{ documentId: string }>
   addProjectNote: (content: string, title?: string) => Promise<{ documentId: string }>
   removeProjectDocument: (docId: string) => Promise<void>
-  updateProject: (patch: { name?: string; description?: string }) => Promise<void>
+  updateProject: (patch: { name?: string; description?: string; icon?: string }) => Promise<void>
 }
 
 const ProjectContext = createContext<ProjectState | null>(null)
@@ -41,12 +41,14 @@ export function ProjectProvider({ projectId, children }: { projectId: string; ch
       .then(({ project: p, documents }: { project: Project; documents: Array<{
         id: string; name: string; mime_type: string; size_bytes: number
         status: ProjectDocument['status']; page_count: number | null
-        chunk_count: number; error_message: string | null; created_at: string
+        chunk_count: number; word_count: number | null
+        error_message: string | null; created_at: string
       }> }) => {
         if (cancelled) return
-        const raw = p as unknown as { id: string; name: string; description: string | null; created_at: string; updated_at: string }
+        const raw = p as unknown as { id: string; name: string; description: string | null; icon: string | null; created_at: string; updated_at: string }
         setProject({
           id: raw.id, name: raw.name, description: raw.description,
+          icon: raw.icon ?? null,
           createdAt: raw.created_at,
           updatedAt: raw.updated_at,
         })
@@ -55,6 +57,7 @@ export function ProjectProvider({ projectId, children }: { projectId: string; ch
             id: d.id, projectId, name: d.name, mimeType: d.mime_type,
             sizeBytes: d.size_bytes, status: d.status,
             pageCount: d.page_count, chunkCount: d.chunk_count,
+            wordCount: d.word_count,
             error: d.error_message ?? undefined, createdAt: d.created_at,
           })),
         )
@@ -102,7 +105,8 @@ export function ProjectProvider({ projectId, children }: { projectId: string; ch
             const parsed = JSON.parse(payload) as {
               type?: string; id?: string; phase?: string
               completed?: number; total?: number
-              chunkCount?: number; pageCount?: number | null; error?: string
+              chunkCount?: number; pageCount?: number | null
+              wordCount?: number | null; error?: string
             }
             if (parsed.type === 'doc.created' && parsed.id) {
               serverId = parsed.id
@@ -121,7 +125,9 @@ export function ProjectProvider({ projectId, children }: { projectId: string; ch
             } else if (parsed.type === 'doc.ready' && serverId) {
               updateDocumentById(serverId, {
                 status: 'ready', chunkCount: parsed.chunkCount,
-                pageCount: parsed.pageCount ?? null, progress: undefined,
+                pageCount: parsed.pageCount ?? null,
+                wordCount: parsed.wordCount ?? null,
+                progress: undefined,
               })
             } else if (parsed.type === 'doc.error' && serverId) {
               updateDocumentById(serverId, { status: 'error', error: parsed.error, progress: undefined })
@@ -197,15 +203,15 @@ export function ProjectProvider({ projectId, children }: { projectId: string; ch
   )
 
   const updateProject = useCallback(
-    async (patch: { name?: string; description?: string }) => {
+    async (patch: { name?: string; description?: string; icon?: string }) => {
       const res = await fetch(`/api/projects/${projectId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       })
       if (!res.ok) throw new Error('Failed to update project')
-      const { project: updated } = await res.json() as { project: { id: string; name: string; description: string | null; updated_at: string } }
-      setProject((prev) => prev ? { ...prev, name: updated.name, description: updated.description, updatedAt: updated.updated_at } : prev)
+      const { project: updated } = await res.json() as { project: { id: string; name: string; description: string | null; icon: string | null; updated_at: string } }
+      setProject((prev) => prev ? { ...prev, name: updated.name, description: updated.description, icon: updated.icon, updatedAt: updated.updated_at } : prev)
     },
     [projectId],
   )

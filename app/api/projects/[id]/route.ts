@@ -19,7 +19,7 @@ export async function GET(
 
   const { data: project, error } = await supabase
     .from('projects')
-    .select('id, name, description, created_at, updated_at')
+    .select('id, name, description, icon, created_at, updated_at')
     .eq('id', id)
     .maybeSingle()
 
@@ -45,7 +45,7 @@ export async function PATCH(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return jsonError('Unauthorized', 401)
 
-  let body: { name?: string; description?: string }
+  let body: { name?: string; description?: string; icon?: string }
   try {
     body = await req.json()
   } catch {
@@ -55,12 +55,13 @@ export async function PATCH(
   const patch: Record<string, string | null> = { updated_at: new Date().toISOString() }
   if (typeof body.name === 'string' && body.name.trim()) patch.name = body.name.trim()
   if (typeof body.description === 'string') patch.description = body.description.trim() || null
+  if (typeof body.icon === 'string') patch.icon = body.icon.trim() || null
 
   const { data, error } = await supabase
     .from('projects')
     .update(patch)
     .eq('id', id)
-    .select('id, name, description, updated_at')
+    .select('id, name, description, icon, updated_at')
     .single()
 
   if (error) return jsonError(error.message, 500)
