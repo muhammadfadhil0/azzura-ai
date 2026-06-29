@@ -13,6 +13,17 @@ export interface ParseResult {
   pageCount?: number
 }
 
+export function countWords(text: string): number {
+  const matches = text.match(/\S+/g)
+  return matches ? matches.length : 0
+}
+
+export function countWordsInBlocks(blocks: ParsedBlock[]): number {
+  let total = 0
+  for (const b of blocks) total += countWords(b.text)
+  return total
+}
+
 export const SUPPORTED_DOC_MIME = new Set([
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
