@@ -1,20 +1,44 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   IconFileText, IconLoader2, IconTrash, IconUpload,
   IconAlertCircle, IconCheck, IconNotes,
 } from '@tabler/icons-react'
 import { useProject } from '@/components/projects/project-provider'
+import { Loader } from '@/components/ui/loader'
 import type { ProjectDocument } from '@/types/project'
 
 const SUPPORTED_EXTENSIONS = '.pdf,.docx,.txt,.md'
 
 function StatusChip({ doc }: { doc: ProjectDocument }) {
+  const prevStatus = useRef(doc.status)
+  const [showReadyFlash, setShowReadyFlash] = useState(false)
+
+  useEffect(() => {
+    if (prevStatus.current !== 'ready' && doc.status === 'ready') {
+      setShowReadyFlash(true)
+      const t = setTimeout(() => setShowReadyFlash(false), 1800)
+      prevStatus.current = doc.status
+      return () => clearTimeout(t)
+    }
+    prevStatus.current = doc.status
+  }, [doc.status])
+
   if (doc.status === 'ready') {
+    if (showReadyFlash) {
+      return (
+        <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+          <IconCheck className="size-3" /> Ready
+        </span>
+      )
+    }
+    const parts: string[] = []
+    if (doc.wordCount) parts.push(`${doc.wordCount.toLocaleString('id-ID')} kata`)
+    if (doc.pageCount) parts.push(`${doc.pageCount} hlm`)
     return (
-      <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-        <IconCheck className="size-3" /> Ready
+      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+        {parts.length > 0 ? parts.join(' · ') : 'Ready'}
       </span>
     )
   }
@@ -95,7 +119,7 @@ function NoteDialog({ onClose }: { onClose: () => void }) {
 }
 
 export function KnowledgeBase() {
-  const { projectDocuments, uploadProjectDocument, removeProjectDocument } = useProject()
+  const { projectDocuments, isLoadingProject, uploadProjectDocument, removeProjectDocument } = useProject()
   const fileRef = useRef<HTMLInputElement>(null)
   const [noteOpen, setNoteOpen] = useState(false)
 
@@ -104,6 +128,14 @@ export function KnowledgeBase() {
     Array.from(files).forEach((f) => {
       uploadProjectDocument(f).catch(() => { /* error shown via doc status chip */ })
     })
+  }
+
+  if (isLoadingProject) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader />
+      </div>
+    )
   }
 
   return (
