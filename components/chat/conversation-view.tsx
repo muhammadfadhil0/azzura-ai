@@ -19,7 +19,7 @@ function makeId() {
 
 const MAX_DOCS_PER_CONVERSATION = 5
 
-export function ConversationView({ id }: { id: string }) {
+export function ConversationView({ id, projectId }: { id: string; projectId?: string }) {
   const {
     getConversation,
     isLoadingConversations,
@@ -109,7 +109,7 @@ export function ConversationView({ id }: { id: string }) {
     }
     const history = [...activePath, userMessage]
     await appendMessage(conversation.id, userMessage)
-    streamAssistantReply(conversation.id, history, { webSearch })
+    streamAssistantReply(conversation.id, history, { webSearch, projectId })
   }
 
   if (isLoadingMessages) {

@@ -42,15 +42,15 @@ interface ChatState {
   setSelectedModelId: (id: string) => void
   getConversation: (id: string) => Conversation | undefined
   loadConversationMessages: (id: string) => Promise<void>
-  createConversation: (initial: Message) => Promise<string>
-  createEmptyConversation: () => Promise<string>
+  createConversation: (initial: Message, options?: { projectId?: string }) => Promise<string>
+  createEmptyConversation: (options?: { projectId?: string }) => Promise<string>
   appendMessage: (conversationId: string, message: Message) => Promise<void>
   renameConversation: (id: string, title: string) => Promise<void>
   deleteConversation: (id: string) => Promise<void>
   streamAssistantReply: (
     conversationId: string,
     history: Message[],
-    options?: { webSearch?: boolean },
+    options?: { webSearch?: boolean; projectId?: string },
   ) => void
   stopStreaming: () => void
   regenerateAssistantMessage: (
@@ -174,7 +174,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setIsLoadingConversations(true)
     supabase
       .from('conversations')
-      .select('id, title, updated_at, active_leaf_message_id')
+      .select('id, title, updated_at, active_leaf_message_id, project_id')
       .order('updated_at', { ascending: false })
       .then(({ data, error }) => {
         if (cancelled) return
@@ -187,6 +187,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               id: c.id,
               title: c.title,
               updatedAt: c.updated_at,
+              projectId: (c as { project_id?: string | null }).project_id ?? null,
               allMessages: [],
               activeLeafId: c.active_leaf_message_id ?? null,
             })),
@@ -267,7 +268,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   )
 
   const createConversation = useCallback(
-    async (initial: Message) => {
+    async (initial: Message, options?: { projectId?: string }) => {
       if (!userId) throw new Error('Not signed in')
       const id = makeId()
       const title = titleFromMessage(initial.content || 'New chat')
@@ -280,6 +281,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           id,
           title,
           updatedAt: nowIso,
+          projectId: options?.projectId ?? null,
           isGeneratingTitle: true,
           allMessages: [rootMessage],
           activeLeafId: rootMessage.id,
@@ -293,6 +295,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         user_id: userId,
         title,
         model: selectedModelIdRef.current,
+        project_id: options?.projectId ?? null,
       })
       if (convErr) {
         console.error('Failed to insert conversation', convErr)
@@ -343,7 +346,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [supabase, userId],
   )
 
-  const createEmptyConversation = useCallback(async () => {
+  const createEmptyConversation = useCallback(async (options?: { projectId?: string }) => {
     if (!userId) throw new Error('Not signed in')
     const id = makeId()
     const nowIso = new Date().toISOString()
@@ -352,6 +355,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         id,
         title: 'New chat',
         updatedAt: nowIso,
+        projectId: options?.projectId ?? null,
         allMessages: [],
         activeLeafId: null,
       },
@@ -366,6 +370,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       user_id: userId,
       title: 'New chat',
       model: selectedModelIdRef.current,
+      project_id: options?.projectId ?? null,
     })
     if (error) {
       console.error('Failed to insert empty conversation', error)
@@ -825,7 +830,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     (
       conversationId: string,
       history: Message[],
-      options?: { webSearch?: boolean },
+      options?: { webSearch?: boolean; projectId?: string },
     ) => {
       const lastMsg = history[history.length - 1]
       const assistantId = makeId()
@@ -895,6 +900,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               webSearch,
               assistantMessageId: assistantId,
               conversationId,
+              projectId: options?.projectId ?? null,
             }),
             signal: controller.signal,
           })

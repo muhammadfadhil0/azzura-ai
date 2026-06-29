@@ -8,7 +8,7 @@ import {
   tavilySearch,
   truncate,
 } from '@/lib/ai/tavily'
-import { buildRagSystemMessage, retrieveChunks } from '@/lib/rag/retrieve'
+import { buildRagSystemMessage, retrieveCombinedChunks } from '@/lib/rag/retrieve'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 const EXTRACT_TOP_N = 4
@@ -22,6 +22,7 @@ export async function POST(req: Request) {
     webSearch?: boolean
     assistantMessageId?: string
     conversationId?: string
+    projectId?: string
   }
   try {
     body = await req.json()
@@ -50,6 +51,10 @@ export async function POST(req: Request) {
   const conversationId =
     typeof body.conversationId === 'string' && body.conversationId.trim()
       ? body.conversationId.trim()
+      : null
+  const projectId =
+    typeof body.projectId === 'string' && body.projectId.trim()
+      ? body.projectId.trim()
       : null
 
   const encoder = new TextEncoder()
@@ -195,17 +200,23 @@ Kamu BUKAN sekadar membaca thumbnail. Kamu sudah membaca isi lengkap dari ${topR
           }
         }
 
-        if (conversationId) {
+        if (conversationId || projectId) {
           const lastUser = [...messages].reverse().find((m) => m.role === 'user')
           const ragQuery = lastUser?.content?.trim() ?? ''
 
           if (ragQuery) {
             try {
               const admin = createAdminClient()
+
+              // Check if there are any ready documents to retrieve from
+              const filters = []
+              if (conversationId) filters.push(`conversation_id.eq.${conversationId}`)
+              if (projectId) filters.push(`project_id.eq.${projectId}`)
+
               const { count } = await admin
                 .from('documents')
                 .select('id', { count: 'exact', head: true })
-                .eq('conversation_id', conversationId)
+                .or(filters.join(','))
                 .eq('status', 'ready')
 
               if ((count ?? 0) > 0) {
@@ -215,8 +226,9 @@ Kamu BUKAN sekadar membaca thumbnail. Kamu sudah membaca isi lengkap dari ${topR
                   query: ragQuery,
                 })
 
-                const { chunks, docs } = await retrieveChunks(
+                const { chunks, docs } = await retrieveCombinedChunks(
                   conversationId,
+                  projectId,
                   ragQuery,
                 )
 

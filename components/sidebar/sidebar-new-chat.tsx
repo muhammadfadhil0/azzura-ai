@@ -36,7 +36,7 @@ export function SidebarNewChat({ collapsed }: { collapsed: boolean }) {
   }
 
   return (
-    <div className="px-2 pb-1.5">
+    <div className="px-2">
       <Link
         href="/"
         onClick={() => setMobileOpen(false)}

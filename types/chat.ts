@@ -23,6 +23,7 @@ export interface Conversation {
   id: string
   title: string
   updatedAt: string
+  projectId?: string | null
   isGeneratingTitle?: boolean
   // Full tree of all messages in this conversation, including siblings from
   // regenerations. Active path is derived by walking parentId from activeLeafId.

@@ -1,6 +1,6 @@
 'use client'
 
-import { IconDots, IconPencil, IconTrash } from '@tabler/icons-react'
+import { IconDots, IconFolder, IconPencil, IconTrash } from '@tabler/icons-react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useState } from 'react'
@@ -30,7 +30,12 @@ export function ConversationItem({ conversation }: { conversation: Conversation 
   const router = useRouter()
   const { renameConversation, deleteConversation } = useChat()
   const { setMobileOpen } = useSidebar()
-  const active = pathname === `/c/${conversation.id}`
+  const href = conversation.projectId
+    ? `/projects/${conversation.projectId}/c/${conversation.id}`
+    : `/c/${conversation.id}`
+  const active =
+    pathname === `/c/${conversation.id}` ||
+    pathname === `/projects/${conversation.projectId}/c/${conversation.id}`
 
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -43,7 +48,9 @@ export function ConversationItem({ conversation }: { conversation: Conversation 
 
   const handleDeleteConfirm = () => {
     deleteConversation(conversation.id)
-    if (active) router.push('/')
+    if (active) {
+      router.push(conversation.projectId ? `/projects/${conversation.projectId}` : '/')
+    }
     setDeleteOpen(false)
   }
 
@@ -58,15 +65,18 @@ export function ConversationItem({ conversation }: { conversation: Conversation 
         )}
       >
         <Link
-          href={`/c/${conversation.id}`}
+          href={href}
           onClick={() => setMobileOpen(false)}
-          className="flex-1 truncate px-2.5 py-2 pr-8"
+          className="flex flex-1 items-center gap-1.5 truncate px-2.5 py-2 pr-8"
           title={conversation.isGeneratingTitle ? undefined : conversation.title}
         >
+          {conversation.projectId && (
+            <IconFolder className="size-3 shrink-0 text-muted-foreground" />
+          )}
           {conversation.isGeneratingTitle ? (
             <span className="block h-3 w-28 animate-pulse rounded bg-sidebar-foreground/15" />
           ) : (
-            conversation.title
+            <span className="truncate">{conversation.title}</span>
           )}
         </Link>
         <DropdownMenu>

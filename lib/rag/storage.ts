@@ -24,6 +24,15 @@ export function buildDocumentPath(
   return `${userId}/${conversationId}/docs/${docId}${documentExtension(mimeType)}`
 }
 
+export function buildProjectDocumentPath(
+  userId: string,
+  projectId: string,
+  docId: string,
+  mimeType: string,
+): string {
+  return `${userId}/projects/${projectId}/docs/${docId}${documentExtension(mimeType)}`
+}
+
 export async function uploadDocumentFile(
   supabase: SupabaseClient,
   path: string,

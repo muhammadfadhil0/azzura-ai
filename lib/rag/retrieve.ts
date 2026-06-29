@@ -58,6 +58,76 @@ export async function retrieveChunks(
   }
 }
 
+export async function retrieveProjectChunks(
+  projectId: string,
+  query: string,
+  k = 6,
+  minSimilarity = 0.3,
+): Promise<{ chunks: RetrievedChunk[]; docs: RetrievedDoc[] }> {
+  const admin = createAdminClient()
+  const [embedding] = await embedTexts([query])
+  if (!embedding) return { chunks: [], docs: [] }
+
+  const { data, error } = await admin.rpc('match_project_chunks', {
+    query_embedding: `[${embedding.join(',')}]`,
+    proj_id: projectId,
+    match_count: k,
+    min_similarity: minSimilarity,
+  })
+  if (error) {
+    console.error('match_project_chunks RPC failed', error)
+    return { chunks: [], docs: [] }
+  }
+  if (!data || data.length === 0) return { chunks: [], docs: [] }
+
+  const chunks = data as RetrievedChunk[]
+  const docIds = Array.from(new Set(chunks.map((c) => c.document_id)))
+
+  const { data: docs } = await admin
+    .from('documents')
+    .select('id, name')
+    .in('id', docIds)
+
+  return {
+    chunks,
+    docs: ((docs ?? []) as Array<{ id: string; name: string }>).map((d) => ({
+      id: d.id,
+      name: d.name,
+    })),
+  }
+}
+
+export async function retrieveCombinedChunks(
+  conversationId: string | null,
+  projectId: string | null,
+  query: string,
+  k = 8,
+): Promise<{ chunks: RetrievedChunk[]; docs: RetrievedDoc[] }> {
+  const results = await Promise.all([
+    conversationId ? retrieveChunks(conversationId, query, k) : Promise.resolve({ chunks: [], docs: [] }),
+    projectId ? retrieveProjectChunks(projectId, query, k) : Promise.resolve({ chunks: [], docs: [] }),
+  ])
+
+  const allChunks = [...results[0].chunks, ...results[1].chunks]
+  const allDocs = [...results[0].docs, ...results[1].docs]
+
+  const seen = new Set<string>()
+  const uniqueChunks = allChunks
+    .filter((c) => { if (seen.has(c.id)) return false; seen.add(c.id); return true })
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, k)
+
+  const usedDocIds = new Set(uniqueChunks.map((c) => c.document_id))
+  const seenDocIds = new Set<string>()
+  const uniqueDocs = allDocs.filter((d) => {
+    if (!usedDocIds.has(d.id) || seenDocIds.has(d.id)) return false
+    seenDocIds.add(d.id)
+    return true
+  })
+
+  return { chunks: uniqueChunks, docs: uniqueDocs }
+}
+
 export function buildRagSystemMessage(
   chunks: RetrievedChunk[],
   docsById: Map<string, string>,
