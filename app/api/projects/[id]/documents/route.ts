@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { parseDocument, SUPPORTED_DOC_MIME } from '@/lib/rag/parse'
+import { parseDocument, SUPPORTED_DOC_MIME, countWordsInBlocks } from '@/lib/rag/parse'
 import { chunkBlocks } from '@/lib/rag/chunker'
 import { embedTexts } from '@/lib/ai/embeddings'
 import { buildProjectDocumentPath, uploadDocumentFile } from '@/lib/rag/storage'
@@ -41,7 +41,7 @@ export async function GET(
 
   const { data, error } = await supabase
     .from('documents')
-    .select('id, name, mime_type, size_bytes, status, page_count, chunk_count, error_message, created_at')
+    .select('id, name, mime_type, size_bytes, status, page_count, chunk_count, word_count, error_message, created_at')
     .eq('project_id', id)
     .is('conversation_id', null)
     .order('created_at', { ascending: true })
@@ -135,7 +135,8 @@ export async function POST(
         const chunks = chunkBlocks(parsed.blocks)
         if (chunks.length === 0) throw new Error('No readable content extracted from document')
 
-        await admin.from('documents').update({ status: 'embedding', page_count: parsed.pageCount ?? null }).eq('id', docId)
+        const wordCount = countWordsInBlocks(parsed.blocks)
+        await admin.from('documents').update({ status: 'embedding', page_count: parsed.pageCount ?? null, word_count: wordCount }).eq('id', docId)
         send({ type: 'doc.progress', id: docId, phase: 'embedding', completed: 0, total: chunks.length })
 
         const contents = chunks.map((c) => c.content)
@@ -164,7 +165,7 @@ export async function POST(
         }
 
         await admin.from('documents').update({ status: 'ready', chunk_count: chunks.length, updated_at: new Date().toISOString() }).eq('id', docId)
-        send({ type: 'doc.ready', id: docId, chunkCount: chunks.length, pageCount: parsed.pageCount ?? null })
+        send({ type: 'doc.ready', id: docId, chunkCount: chunks.length, pageCount: parsed.pageCount ?? null, wordCount })
       } catch (err) {
         const msg = err instanceof Error ? err.message : ((err as { message?: string })?.message ?? JSON.stringify(err))
         console.error('Project document indexing failed', msg)

@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { chunkBlocks } from '@/lib/rag/chunker'
 import { embedTexts } from '@/lib/ai/embeddings'
-import type { ParsedBlock } from '@/lib/rag/parse'
+import { countWordsInBlocks, type ParsedBlock } from '@/lib/rag/parse'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -86,6 +86,9 @@ export async function POST(
         const chunks = chunkBlocks(blocks)
         if (chunks.length === 0) throw new Error('No content to index')
 
+        const wordCount = countWordsInBlocks(blocks)
+        await admin.from('documents').update({ word_count: wordCount }).eq('id', docId)
+
         send({ type: 'doc.progress', id: docId, phase: 'embedding', completed: 0, total: chunks.length })
 
         const contents = chunks.map((c) => c.content)
@@ -114,7 +117,7 @@ export async function POST(
         }
 
         await admin.from('documents').update({ status: 'ready', chunk_count: chunks.length, updated_at: new Date().toISOString() }).eq('id', docId)
-        send({ type: 'doc.ready', id: docId, chunkCount: chunks.length, pageCount: null })
+        send({ type: 'doc.ready', id: docId, chunkCount: chunks.length, pageCount: null, wordCount })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         try {
