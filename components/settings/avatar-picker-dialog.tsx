@@ -73,6 +73,13 @@ export function AvatarPickerDialog({ open, onOpenChange, userId, onSaved }: Prop
         data: { avatar_url: finalUrl },
       })
       if (updateError) throw updateError
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .upsert(
+          { id: userId, avatar_url: finalUrl, updated_at: new Date().toISOString() },
+          { onConflict: 'id' },
+        )
+      if (profileError) throw profileError
       onSaved(finalUrl)
       onOpenChange(false)
     } catch {

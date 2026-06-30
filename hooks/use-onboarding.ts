@@ -63,5 +63,12 @@ export function useOnboarding() {
     setShowOnboarding(false)
   }
 
-  return { showOnboarding, loading, profile, completeOnboarding, dismissOnboarding }
+  async function refreshProfile() {
+    if (!userId) return
+    const supabase = createClient()
+    const prof = await getProfile(supabase, userId)
+    setProfile(prof)
+  }
+
+  return { showOnboarding, loading, profile, completeOnboarding, dismissOnboarding, refreshProfile }
 }

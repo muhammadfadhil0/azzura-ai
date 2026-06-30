@@ -37,6 +37,38 @@ export async function markOnboardingShown(supabase: SupabaseClient, userId: stri
     .upsert({ id: userId, onboarding_last_prompted_at: new Date().toISOString() }, { onConflict: 'id' })
 }
 
+export interface ProfileUpdate {
+  nickname?: string
+  job?: string | null
+  bio?: string | null
+}
+
+export async function updateProfile(
+  supabase: SupabaseClient,
+  userId: string,
+  data: ProfileUpdate,
+) {
+  if (data.nickname !== undefined && data.nickname.trim().length < 2) {
+    throw new Error('Nickname minimal 2 karakter')
+  }
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      ...(data.nickname !== undefined && { nickname: data.nickname }),
+      ...(data.job !== undefined && { job: data.job }),
+      ...(data.bio !== undefined && { bio: data.bio }),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', userId)
+  if (error) throw error
+  if (data.nickname !== undefined) {
+    const { error: authError } = await supabase.auth.updateUser({
+      data: { nickname: data.nickname },
+    })
+    if (authError) throw authError
+  }
+}
+
 export async function completeOnboarding(
   supabase: SupabaseClient,
   userId: string,

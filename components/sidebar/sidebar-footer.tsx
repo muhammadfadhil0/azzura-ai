@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useUser } from '@/hooks/use-user'
+import { useOnboarding } from '@/hooks/use-onboarding'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 
@@ -29,9 +30,10 @@ function initials(value: string) {
 
 export function SidebarFooter({ collapsed }: { collapsed: boolean }) {
   const { user, avatarUrl } = useUser()
+  const { profile } = useOnboarding()
   const router = useRouter()
-  const email = user?.email ?? ''
-  const label = email || 'Loading…'
+  const displayName = profile?.nickname || user?.email || ''
+  const label = displayName || 'Loading…'
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const handleSignOut = async () => {
@@ -61,7 +63,7 @@ export function SidebarFooter({ collapsed }: { collapsed: boolean }) {
               <Avatar className="size-7 shrink-0">
                 {avatarUrl && <AvatarImage src={avatarUrl} />}
                 <AvatarFallback className="text-xs font-medium">
-                  {email ? initials(email) : '?'}
+                  {displayName ? initials(displayName) : '?'}
                 </AvatarFallback>
               </Avatar>
               {!collapsed ? (
@@ -75,7 +77,7 @@ export function SidebarFooter({ collapsed }: { collapsed: boolean }) {
             <Avatar className="size-9 shrink-0">
               {avatarUrl && <AvatarImage src={avatarUrl} />}
               <AvatarFallback className="text-sm font-semibold">
-                {email ? initials(email) : '?'}
+                {displayName ? initials(displayName) : '?'}
               </AvatarFallback>
             </Avatar>
             <div className="flex min-w-0 flex-col gap-0.5">
