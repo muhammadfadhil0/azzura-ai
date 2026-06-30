@@ -1,25 +1,97 @@
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
+import type {
+  ChatCompletionAssistantMessageParam,
+  ChatCompletionMessageParam,
+  ChatCompletionMessageToolCall,
+} from 'openai/resources/chat/completions'
 import { adacode, ADACODE_MODEL } from '@/lib/ai/adacode'
 import { gemini, isGeminiModel } from '@/lib/ai/gemini'
 import { toOpenAIMessages } from '@/lib/ai/messages'
 import {
-  domainOf,
-  tavilyExtract,
-  tavilySearch,
-  truncate,
-} from '@/lib/ai/tavily'
-import { buildRagSystemMessage, retrieveCombinedChunks } from '@/lib/rag/retrieve'
+  buildTools,
+  execRetrieveDocs,
+  execWebExtract,
+  execWebSearch,
+  execWriteCanvas,
+  getCurrentCanvas,
+} from '@/lib/ai/tools'
 import { createAdminClient } from '@/lib/supabase/admin'
-
-const EXTRACT_TOP_N = 4
-const EXTRACT_CHAR_LIMIT = 6000
+import { createClient as createServerSupabase } from '@/lib/supabase/server'
 import type { Message } from '@/types/chat'
+import type { CanvasMode } from '@/types/canvas'
+
+const MAX_TOOL_ITERATIONS = 4
+
+interface AccumulatedToolCall {
+  id: string
+  name: string
+  argumentsRaw: string
+  // For write_canvas streaming: tracks how much of the `content` string has
+  // already been emitted as canvas.delta to the client.
+  canvasStartSent?: boolean
+  canvasLastEmitted?: number
+}
+
+/**
+ * Best-effort extraction of the partial value of the "content" string field
+ * from a JSON object that may be partially streamed. Returns the decoded
+ * substring of "content" we've seen so far, or null if the field isn't found
+ * yet. We only decode characters whose JSON escape state is unambiguous —
+ * a half-emitted backslash escape (e.g. trailing `\`) returns what's stable.
+ */
+function extractPartialContentString(raw: string): string | null {
+  const key = '"content":'
+  const keyIdx = raw.indexOf(key)
+  if (keyIdx < 0) return null
+  let i = keyIdx + key.length
+  // Skip whitespace.
+  while (i < raw.length && (raw[i] === ' ' || raw[i] === '\n' || raw[i] === '\t')) i++
+  if (i >= raw.length || raw[i] !== '"') return null
+  i++ // past the opening quote
+  let out = ''
+  while (i < raw.length) {
+    const ch = raw[i]
+    if (ch === '\\') {
+      // Need at least one more char to decide.
+      if (i + 1 >= raw.length) return out
+      const next = raw[i + 1]
+      if (next === 'n') out += '\n'
+      else if (next === 't') out += '\t'
+      else if (next === 'r') out += '\r'
+      else if (next === '"') out += '"'
+      else if (next === '\\') out += '\\'
+      else if (next === '/') out += '/'
+      else if (next === 'b') out += '\b'
+      else if (next === 'f') out += '\f'
+      else if (next === 'u') {
+        if (i + 5 >= raw.length) return out
+        const hex = raw.slice(i + 2, i + 6)
+        const code = parseInt(hex, 16)
+        if (Number.isNaN(code)) return out
+        out += String.fromCharCode(code)
+        i += 6
+        continue
+      } else {
+        out += next
+      }
+      i += 2
+      continue
+    }
+    if (ch === '"') {
+      // Closing quote — content fully streamed.
+      return out
+    }
+    out += ch
+    i++
+  }
+  return out
+}
 
 export async function POST(req: Request) {
   let body: {
     messages?: Message[]
     model?: string
     webSearch?: boolean
+    canvas?: boolean
     assistantMessageId?: string
     conversationId?: string
     projectId?: string
@@ -46,6 +118,7 @@ export async function POST(req: Request) {
       ? body.model.trim()
       : ADACODE_MODEL
   const webSearch = body.webSearch === true
+  const canvas = body.canvas === true
   const assistantMessageId =
     typeof body.assistantMessageId === 'string' ? body.assistantMessageId : ''
   const conversationId =
@@ -57,6 +130,36 @@ export async function POST(req: Request) {
       ? body.projectId.trim()
       : null
 
+  // Resolve current user from cookie session (needed for canvas inserts).
+  // Fallback: look up the conversation's owner via admin client if auth.getUser
+  // didn't return a user — keeps canvas working in dev where cookies may be flaky.
+  let userId: string | null = null
+  if (canvas) {
+    try {
+      const supabase = await createServerSupabase()
+      const { data } = await supabase.auth.getUser()
+      userId = data.user?.id ?? null
+    } catch {
+      userId = null
+    }
+    if (!userId && conversationId) {
+      try {
+        const admin = createAdminClient()
+        const { data } = await admin
+          .from('conversations')
+          .select('user_id')
+          .eq('id', conversationId)
+          .maybeSingle()
+        userId = (data?.user_id as string | undefined) ?? null
+      } catch (err) {
+        console.error('canvas userId fallback failed', err)
+      }
+    }
+    if (!userId) {
+      console.warn('canvas: no userId resolved; write_canvas will fail')
+    }
+  }
+
   const encoder = new TextEncoder()
   const stream = new ReadableStream({
     async start(controller) {
@@ -67,214 +170,277 @@ export async function POST(req: Request) {
       }
 
       try {
-        const convo: ChatCompletionMessageParam[] = toOpenAIMessages(messages, {
-          webSearch,
+        const ragAvailable = await hasReadyDocuments(conversationId, projectId)
+        const currentCanvas = canvas
+          ? await getCurrentCanvas(conversationId)
+          : null
+        const tools = buildTools({
+          webSearchEnabled: webSearch,
+          ragAvailable,
+          canvasEnabled: canvas,
         })
 
-        if (webSearch) {
-          const lastUser = [...messages].reverse().find((m) => m.role === 'user')
-          const query = lastUser?.content?.trim() ?? ''
-
-          if (query) {
-            send({
-              type: 'web_search.start',
-              messageId: assistantMessageId,
-              query,
-            })
-
-            try {
-              const { results, answer } = await tavilySearch(query, req.signal)
-
-              const topResults = results.slice(0, EXTRACT_TOP_N)
-              const topUrls = topResults.map((r) => r.url)
-
-              topResults.forEach((r, index) => {
-                send({
-                  type: 'web_search.progress',
-                  messageId: assistantMessageId,
-                  domain: domainOf(r.url),
-                  index,
-                  total: topResults.length,
-                  phase: 'reading',
-                })
-              })
-
-              let extracted: { url: string; raw_content: string }[] = []
-              if (topUrls.length > 0) {
-                try {
-                  const extractRes = await tavilyExtract(topUrls, req.signal)
-                  extracted = extractRes.results
-                  extracted.forEach((r, index) => {
-                    send({
-                      type: 'web_search.progress',
-                      messageId: assistantMessageId,
-                      domain: domainOf(r.url),
-                      index,
-                      total: extracted.length,
-                      phase: 'extracted',
-                    })
-                  })
-                } catch (extractErr) {
-                  const msg =
-                    extractErr instanceof Error
-                      ? extractErr.message
-                      : String(extractErr)
-                  send({
-                    type: 'web_search.progress',
-                    messageId: assistantMessageId,
-                    domain: 'extract failed',
-                    index: 0,
-                    total: 0,
-                    phase: 'fallback',
-                    error: msg,
-                  })
-                }
-              }
-
-              send({
-                type: 'web_search.complete',
-                messageId: assistantMessageId,
-                count: topResults.length,
-                sources: topResults.map((r) => ({
-                  url: r.url,
-                  domain: domainOf(r.url),
-                  title: r.title,
-                })),
-              })
-
-              if (topResults.length > 0) {
-                const extractedByUrl = new Map(
-                  extracted.map((e) => [e.url, e.raw_content]),
-                )
-
-                const sourcesBlock = topResults
-                  .map((r, i) => {
-                    const date = r.published_date
-                      ? ` (terbit: ${r.published_date})`
-                      : ''
-                    const full = extractedByUrl.get(r.url)
-                    const body = full
-                      ? `ISI HALAMAN (extract penuh):\n${truncate(full, EXTRACT_CHAR_LIMIT)}`
-                      : `SNIPPET (extract gagal, hanya cuplikan):\n${r.content}`
-                    return `===== SUMBER [${i + 1}] =====
-Judul: ${r.title}${date}
-Domain: ${domainOf(r.url)}
-URL: ${r.url}
-
-${body}`
-                  })
-                  .join('\n\n')
-
-                const answerBlock = answer
-                  ? `RINGKASAN AWAL DARI TAVILY (gunakan sebagai petunjuk, tetap verifikasi dengan isi sumber di bawah):\n${answer}\n\n`
-                  : ''
-
-                convo.push({
-                  role: 'system',
-                  content: `Kamu sudah membuka dan membaca ${topResults.length} halaman web untuk query: "${query}"
-
-${answerBlock}=== ISI LENGKAP DARI SETIAP SUMBER ===
-
-${sourcesBlock}
-
-=== TUGASMU ===
-Kamu BUKAN sekadar membaca thumbnail. Kamu sudah membaca isi lengkap dari ${topResults.length} halaman di atas. Sekarang lakukan analisis lintas-sumber:
-
-1. **Ekstrak fakta** spesifik (tanggal, angka, nama, skor, jadwal, harga, dll) dari isi halaman, bukan judul atau snippet.
-2. **Bandingkan antar sumber**: kalau ada angka/fakta yang sama disebut beberapa sumber, sebut konsensusnya. Kalau ada yang berbeda, tampilkan perbedaannya secara eksplisit (contoh: "Sumber A bilang X, sumber B bilang Y").
-3. **Prioritaskan kebaruan**: kalau ada tanggal terbit, pakai yang paling baru saat sumber bertentangan.
-4. **Cantumkan sumber inline** dengan format markdown \`[domain](url)\` langsung di akhir kalimat — tanpa kata "Sumber:", "Source:", atau label apapun sebelum link. Wajib, supaya user bisa verifikasi.
-5. **Jangan menebak** dari pengetahuan internalmu. Kalau isi halaman tidak menjawab pertanyaan, katakan jujur "sumber yang saya baca tidak memuat info itu" — jangan mengarang penolakan seperti "acaranya belum dimulai" kecuali isi halaman benar-benar mengatakannya.
-6. **Struktur jawaban**: untuk pertanyaan yang butuh perbandingan, pakai tabel atau bullet list. Untuk pertanyaan langsung, jawab langsung lalu kasih konteks.`,
-                })
-              } else {
-                convo.push({
-                  role: 'system',
-                  content: `Pencarian web untuk "${query}" tidak mengembalikan hasil. Katakan jujur ke user bahwa pencarian tidak menemukan apa pun dan sarankan dia mempersempit pertanyaan.`,
-                })
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err)
-              send({ error: `Web search failed: ${msg}` })
-            }
-          }
-        }
-
-        if (conversationId || projectId) {
-          const lastUser = [...messages].reverse().find((m) => m.role === 'user')
-          const ragQuery = lastUser?.content?.trim() ?? ''
-
-          if (ragQuery) {
-            try {
-              const admin = createAdminClient()
-
-              // Check if there are any ready documents to retrieve from
-              const filters = []
-              if (conversationId) filters.push(`conversation_id.eq.${conversationId}`)
-              if (projectId) filters.push(`project_id.eq.${projectId}`)
-
-              const { count } = await admin
-                .from('documents')
-                .select('id', { count: 'exact', head: true })
-                .or(filters.join(','))
-                .eq('status', 'ready')
-
-              if ((count ?? 0) > 0) {
-                send({
-                  type: 'rag.start',
-                  messageId: assistantMessageId,
-                  query: ragQuery,
-                })
-
-                const { chunks, docs } = await retrieveCombinedChunks(
-                  conversationId,
-                  projectId,
-                  ragQuery,
-                )
-
-                if (chunks.length > 0) {
-                  const docsById = new Map(docs.map((d) => [d.id, d.name]))
-                  convo.push({
-                    role: 'system',
-                    content: buildRagSystemMessage(chunks, docsById, ragQuery),
-                  })
-                  send({
-                    type: 'rag.complete',
-                    messageId: assistantMessageId,
-                    count: chunks.length,
-                    docs: docs.map((d) => ({ id: d.id, name: d.name })),
-                  })
-                } else {
-                  send({
-                    type: 'rag.complete',
-                    messageId: assistantMessageId,
-                    count: 0,
-                    docs: [],
-                  })
-                }
-              }
-            } catch (ragErr) {
-              const msg =
-                ragErr instanceof Error ? ragErr.message : String(ragErr)
-              console.error('RAG retrieval failed', msg)
-            }
-          }
-        }
+        const convo: ChatCompletionMessageParam[] = toOpenAIMessages(messages, {
+          webSearch,
+          hasRag: ragAvailable,
+          canvas,
+          currentCanvas,
+          model,
+        })
 
         const client = isGeminiModel(model) ? gemini : adacode
-        const completion = await client.chat.completions.create(
-          {
-            model,
-            messages: convo,
-            stream: true,
-          },
-          { signal: req.signal },
-        )
 
-        for await (const chunk of completion) {
-          const delta = chunk.choices[0]?.delta?.content
-          if (delta) {
-            send({ delta })
+        for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+          const completion = await client.chat.completions.create(
+            {
+              model,
+              messages: convo,
+              stream: true,
+              ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+            },
+            { signal: req.signal },
+          )
+
+          let accumulatedText = ''
+          const toolCallsByIndex = new Map<number, AccumulatedToolCall>()
+          let finishReason: string | null = null
+
+          for await (const chunk of completion) {
+            const choice = chunk.choices[0]
+            if (!choice) continue
+            const delta = choice.delta
+
+            if (delta?.content) {
+              accumulatedText += delta.content
+              send({ delta: delta.content })
+            }
+
+            if (delta?.tool_calls) {
+              for (const tcDelta of delta.tool_calls) {
+                const idx = tcDelta.index
+                const existing = toolCallsByIndex.get(idx) ?? {
+                  id: '',
+                  name: '',
+                  argumentsRaw: '',
+                }
+                if (tcDelta.id) existing.id = tcDelta.id
+                if (tcDelta.function?.name) existing.name = tcDelta.function.name
+                if (tcDelta.function?.arguments) {
+                  existing.argumentsRaw += tcDelta.function.arguments
+                }
+                toolCallsByIndex.set(idx, existing)
+
+                if (existing.name === 'write_canvas') {
+                  if (!existing.canvasStartSent) {
+                    console.log('[canvas] write_canvas tool call detected, emitting canvas.start')
+                    send({
+                      type: 'canvas.start',
+                      messageId: assistantMessageId,
+                    })
+                    existing.canvasStartSent = true
+                    existing.canvasLastEmitted = 0
+                  }
+                  const partial = extractPartialContentString(
+                    existing.argumentsRaw,
+                  )
+                  if (partial !== null) {
+                    const lastEmitted = existing.canvasLastEmitted ?? 0
+                    if (partial.length > lastEmitted) {
+                      send({
+                        type: 'canvas.delta',
+                        messageId: assistantMessageId,
+                        delta: partial.slice(lastEmitted),
+                      })
+                      existing.canvasLastEmitted = partial.length
+                    }
+                  }
+                }
+              }
+            }
+
+            if (choice.finish_reason) {
+              finishReason = choice.finish_reason
+            }
+          }
+
+          const toolCalls = Array.from(toolCallsByIndex.entries())
+            .sort(([a], [b]) => a - b)
+            .map(([, v]) => v)
+            .filter((tc) => tc.name)
+
+          if (toolCalls.length === 0) {
+            break
+          }
+
+          const assistantMsg: ChatCompletionAssistantMessageParam = {
+            role: 'assistant',
+            content: accumulatedText || null,
+            tool_calls: toolCalls.map<ChatCompletionMessageToolCall>((tc) => ({
+              id: tc.id || `call_${Math.random().toString(36).slice(2, 12)}`,
+              type: 'function',
+              function: { name: tc.name, arguments: tc.argumentsRaw || '{}' },
+            })),
+          }
+          convo.push(assistantMsg)
+
+          const assistantToolCalls = assistantMsg.tool_calls ?? []
+
+          const toolResults = await Promise.all(
+            toolCalls.map(async (tc, i) => {
+              const toolCallId = assistantToolCalls[i]?.id ?? tc.id
+              try {
+                const args = parseToolArgs(tc.argumentsRaw)
+                if (tc.name === 'web_search') {
+                  send({
+                    type: 'web_search.start',
+                    messageId: assistantMessageId,
+                    query: typeof args.query === 'string' ? args.query : '',
+                  })
+                  const result = await execWebSearch(
+                    { query: String(args.query ?? '') },
+                    req.signal,
+                    (progress) => {
+                      send({
+                        type: 'web_search.progress',
+                        messageId: assistantMessageId,
+                        domain: progress.domain,
+                        index: progress.index,
+                        total: progress.total,
+                        phase: progress.phase,
+                        ...(progress.error ? { error: progress.error } : {}),
+                      })
+                    },
+                  )
+                  send({
+                    type: 'web_search.complete',
+                    messageId: assistantMessageId,
+                    count: result.count,
+                    sources: result.sources,
+                  })
+                  return { toolCallId, content: result.contentForLLM }
+                }
+
+                if (tc.name === 'web_extract') {
+                  const rawUrls = Array.isArray(args.urls) ? args.urls : []
+                  const urls = rawUrls.filter(
+                    (u): u is string => typeof u === 'string',
+                  )
+                  send({
+                    type: 'web_search.start',
+                    messageId: assistantMessageId,
+                    query: `extract: ${urls.slice(0, 3).join(', ')}${urls.length > 3 ? ` (+${urls.length - 3})` : ''}`,
+                  })
+                  const result = await execWebExtract({ urls }, req.signal)
+                  send({
+                    type: 'web_search.complete',
+                    messageId: assistantMessageId,
+                    count: result.count,
+                    sources: result.sources,
+                  })
+                  return { toolCallId, content: result.contentForLLM }
+                }
+
+                if (tc.name === 'retrieve_documents') {
+                  const query =
+                    typeof args.query === 'string' ? args.query : ''
+                  send({
+                    type: 'rag.start',
+                    messageId: assistantMessageId,
+                    query,
+                  })
+                  const result = await execRetrieveDocs(
+                    { query },
+                    { conversationId, projectId },
+                  )
+                  send({
+                    type: 'rag.complete',
+                    messageId: assistantMessageId,
+                    count: result.count,
+                    docs: result.docs,
+                  })
+                  return { toolCallId, content: result.contentForLLM }
+                }
+
+                if (tc.name === 'write_canvas') {
+                  const rawMode = typeof args.mode === 'string' ? args.mode : 'replace'
+                  const mode: CanvasMode =
+                    rawMode === 'initial' || rawMode === 'replace' || rawMode === 'patch'
+                      ? rawMode
+                      : 'replace'
+                  const title =
+                    typeof args.title === 'string' ? args.title : undefined
+                  const content =
+                    typeof args.content === 'string' ? args.content : ''
+                  console.log('[canvas] executing write_canvas', {
+                    mode,
+                    titleLen: title?.length ?? 0,
+                    contentLen: content.length,
+                    userId,
+                    conversationId,
+                  })
+                  try {
+                    const result = await execWriteCanvas(
+                      { title, content, mode },
+                      {
+                        conversationId,
+                        userId,
+                        assistantMessageId: assistantMessageId || null,
+                      },
+                    )
+                    send({
+                      type: 'canvas.complete',
+                      messageId: assistantMessageId,
+                      canvasId: result.canvasId,
+                      revisionId: result.revisionId,
+                      revisionIndex: result.revisionIndex,
+                      title: result.title,
+                      content: result.content,
+                      mode: result.mode,
+                    })
+                    return {
+                      toolCallId,
+                      content: `Canvas updated (revisi #${result.revisionIndex}, ${result.content.length} chars). Beri konfirmasi singkat 1–2 kalimat ke user dalam Bahasa Indonesia, jangan ulangi isi canvas.`,
+                    }
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err)
+                    send({
+                      type: 'canvas.error',
+                      messageId: assistantMessageId,
+                      error: msg,
+                    })
+                    return {
+                      toolCallId,
+                      content: `TOOL ERROR: write_canvas gagal: ${msg}. Beri tahu user kalau canvas gagal disimpan.`,
+                    }
+                  }
+                }
+
+                return {
+                  toolCallId,
+                  content: `TOOL ERROR: tool "${tc.name}" tidak dikenal.`,
+                }
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err)
+                return {
+                  toolCallId,
+                  content: `TOOL ERROR: ${tc.name} gagal: ${msg}. Sampaikan ke user dengan jujur kalau pencarian gagal.`,
+                }
+              }
+            }),
+          )
+
+          for (const result of toolResults) {
+            convo.push({
+              role: 'tool',
+              tool_call_id: result.toolCallId,
+              content: result.content,
+            })
+          }
+
+          if (finishReason && finishReason !== 'tool_calls') {
+            // Defensive: model stopped for non-tool reason despite producing
+            // tool calls. Don't loop further — let user see what we have.
+            break
           }
         }
 
@@ -297,4 +463,45 @@ Kamu BUKAN sekadar membaca thumbnail. Kamu sudah membaca isi lengkap dari ${topR
       Connection: 'keep-alive',
     },
   })
+}
+
+async function hasReadyDocuments(
+  conversationId: string | null,
+  projectId: string | null,
+): Promise<boolean> {
+  if (!conversationId && !projectId) return false
+  try {
+    const admin = createAdminClient()
+    const filters: string[] = []
+    if (conversationId) filters.push(`conversation_id.eq.${conversationId}`)
+    if (projectId) filters.push(`project_id.eq.${projectId}`)
+
+    const { count, error } = await admin
+      .from('documents')
+      .select('id', { count: 'exact', head: true })
+      .or(filters.join(','))
+      .eq('status', 'ready')
+
+    if (error) {
+      console.error('hasReadyDocuments check failed', error)
+      return false
+    }
+    return (count ?? 0) > 0
+  } catch (err) {
+    console.error('hasReadyDocuments check threw', err)
+    return false
+  }
+}
+
+function parseToolArgs(raw: string): Record<string, unknown> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>
+    }
+    return {}
+  } catch {
+    return {}
+  }
 }
