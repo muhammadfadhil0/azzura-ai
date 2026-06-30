@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  IconBrush,
   IconCheck,
   IconFileText,
   IconPhotoPlus,
@@ -49,6 +50,8 @@ interface Props {
   documentUploadDisabled?: boolean
   webSearchEnabled?: boolean
   onToggleWebSearch?: (enabled: boolean) => void
+  canvasEnabled?: boolean
+  onToggleCanvas?: (enabled: boolean) => void
 }
 
 const DOC_MIME_ALLOW = new Set([
@@ -75,6 +78,8 @@ export function ToolMenu({
   documentUploadDisabled = false,
   webSearchEnabled = false,
   onToggleWebSearch,
+  canvasEnabled = false,
+  onToggleCanvas,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const docInputRef = useRef<HTMLInputElement>(null)
@@ -220,6 +225,31 @@ export function ToolMenu({
             <span className="text-[11px] text-muted-foreground">Create AI images</span>
           </div>
         </DropdownMenuItem>
+        {onToggleCanvas ? (
+          <DropdownMenuItem
+            className={cn(
+              'hidden gap-2.5 py-2 md:flex',
+              canvasEnabled && 'bg-foreground/5',
+            )}
+            onClick={(e) => {
+              e.preventDefault()
+              onToggleCanvas(!canvasEnabled)
+            }}
+          >
+            <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted">
+              <IconBrush className="size-3.5 text-muted-foreground" />
+            </div>
+            <div className="flex flex-col">
+              <span>Canvas</span>
+              <span className="text-[11px] text-muted-foreground">
+                Tulis long-form di panel
+              </span>
+            </div>
+            {canvasEnabled ? (
+              <IconCheck className="ml-auto size-4 text-foreground" />
+            ) : null}
+          </DropdownMenuItem>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
     </>

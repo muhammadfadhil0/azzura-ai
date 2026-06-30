@@ -32,6 +32,7 @@ export default function NewChatPage() {
     text,
     attachments,
     webSearch,
+    canvas,
   }: ComposerPayload) => {
     const userMessage = {
       id: makeId(),
@@ -43,7 +44,7 @@ export default function NewChatPage() {
     }
     try {
       const id = await createConversation(userMessage)
-      streamAssistantReply(id, [userMessage], { webSearch })
+      streamAssistantReply(id, [userMessage], { webSearch, canvas })
       router.push(`/c/${id}`)
     } catch (err) {
       console.error('Failed to start new conversation', err)

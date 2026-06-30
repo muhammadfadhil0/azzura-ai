@@ -1,10 +1,13 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { IconChevronLeft, IconChevronRight, IconGlobe, IconSparkles } from '@tabler/icons-react'
+import { IconChevronLeft, IconChevronRight, IconGlobe } from '@tabler/icons-react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
+import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import { CanvasRevisionCard } from '@/components/canvas/canvas-revision-card'
 import { useChat } from '@/components/chat/chat-provider'
 import { useDocumentViewer } from '@/components/chat/document-viewer'
 import { MessageActions } from '@/components/chat/message-actions'
@@ -97,6 +100,7 @@ function useFadingLabel(label: string) {
 
 interface Props {
   message: Message
+  conversationId?: string
   isStreaming?: boolean
   siblingIndex?: number
   siblingCount?: number
@@ -107,6 +111,7 @@ interface Props {
 
 export function MessageAssistant({
   message,
+  conversationId,
   isStreaming = false,
   siblingIndex = 1,
   siblingCount = 1,
@@ -114,8 +119,13 @@ export function MessageAssistant({
   onNextSibling,
   onRegenerate,
 }: Props) {
-  const { searchStatuses } = useChat()
+  const { searchStatuses, canvasRevisionsByConversation } = useChat()
   const { openDocument } = useDocumentViewer()
+  const canvasRevisions = conversationId
+    ? (canvasRevisionsByConversation[conversationId] ?? []).filter(
+        (r) => r.messageId === message.id,
+      )
+    : []
   const search = searchStatuses[message.id]
   const renderedContent = transformCitations(message.content)
   const showThinking = isStreaming && message.content === ''
@@ -142,27 +152,20 @@ export function MessageAssistant({
 
   return (
     <div className="group/msg flex animate-in fade-in slide-in-from-bottom-2 gap-3 duration-200">
-      <div className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-background">
-        <IconSparkles className="size-4" />
-      </div>
       <div className="flex min-w-0 flex-1 flex-col">
         {message.attachments && message.attachments.length > 0 ? (
           <MessageAttachments attachments={message.attachments} />
         ) : null}
         {showSearching ? (
-          <div
-            className={`shimmer-text py-2 text-sm ${fadePhase === 'out' ? 'shimmer-label-out' : 'shimmer-label-in'}`}
-            role="status"
-            aria-live="polite"
-          >
+          <p className="shimmer py-2 text-sm text-muted-foreground" role="status" aria-live="polite">
             {fadingLabel}
-          </div>
+          </p>
         ) : showThinking ? (
           <ThinkingDots />
         ) : (
           <div
             className={[
-              'prose prose-sm dark:prose-invert max-w-none text-sm leading-7',
+              'prose prose-base dark:prose-invert max-w-none text-base leading-7',
               // First/last block flush with bubble edges
               '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
               // Headings
@@ -194,8 +197,8 @@ export function MessageAssistant({
             ].join(' ')}
           >
             <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeHighlight, rehypeKatex]}
               urlTransform={(url) => {
                 if (url.startsWith('doc://')) return url
                 if (/^(https?:|mailto:|tel:|#|\/)/i.test(url)) return url
@@ -233,6 +236,13 @@ export function MessageAssistant({
             {isStreaming ? <TypingCaret /> : null}
           </div>
         )}
+        {canvasRevisions.length > 0 && !isStreaming ? (
+          <div className="mt-2 flex flex-col gap-1.5">
+            {canvasRevisions.map((r) => (
+              <CanvasRevisionCard key={r.id} revision={r} />
+            ))}
+          </div>
+        ) : null}
         {!isStreaming ? (
           <div className="flex flex-wrap items-center gap-1">
             <MessageActions message={message} onRegenerate={onRegenerate} />

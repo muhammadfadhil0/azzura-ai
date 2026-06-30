@@ -83,6 +83,7 @@ export function MessageList({ messages, allMessages, conversationId }: Props) {
             <MessageAssistant
               key={m.id}
               message={m}
+              conversationId={conversationId}
               isStreaming={streamingMessageId === m.id}
               siblingIndex={siblingIndex}
               siblingCount={siblingCount}

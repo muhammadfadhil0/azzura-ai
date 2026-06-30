@@ -42,6 +42,7 @@ export interface ComposerPayload {
   text: string
   attachments: Attachment[]
   webSearch?: boolean
+  canvas?: boolean
 }
 
 export type SearchPhase = 'reading' | 'extracted' | 'fallback'

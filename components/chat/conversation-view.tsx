@@ -29,6 +29,7 @@ export function ConversationView({ id, projectId }: { id: string; projectId?: st
     streamAssistantReply,
     documentsByConversation,
     loadDocuments,
+    loadCanvasRevisions,
     uploadDocument,
     removeDocument,
     hasIndexingDocuments,
@@ -45,8 +46,9 @@ export function ConversationView({ id, projectId }: { id: string; projectId?: st
     if (conversation) {
       void loadConversationMessages(id)
       void loadDocuments(id)
+      void loadCanvasRevisions(id)
     }
-  }, [conversation, id, loadConversationMessages, loadDocuments])
+  }, [conversation, id, loadConversationMessages, loadDocuments, loadCanvasRevisions])
 
   const handleDocumentPicked = (file: File) => {
     void uploadDocument(file, id).catch((err) => {
@@ -98,6 +100,7 @@ export function ConversationView({ id, projectId }: { id: string; projectId?: st
     text,
     attachments,
     webSearch,
+    canvas,
   }: ComposerPayload) => {
     const userMessage: Message = {
       id: makeId(),
@@ -109,7 +112,11 @@ export function ConversationView({ id, projectId }: { id: string; projectId?: st
     }
     const history = [...activePath, userMessage]
     await appendMessage(conversation.id, userMessage)
-    streamAssistantReply(conversation.id, history, { webSearch, projectId })
+    streamAssistantReply(conversation.id, history, {
+      webSearch,
+      canvas,
+      projectId,
+    })
   }
 
   if (isLoadingMessages) {

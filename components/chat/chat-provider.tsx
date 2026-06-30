@@ -21,12 +21,14 @@ import {
   signAttachmentUrls,
   uploadAttachments,
 } from '@/lib/supabase/storage'
+import { useCanvasBridge } from '@/components/canvas/canvas-provider'
 import type {
   Conversation,
   DocumentRef,
   Message,
   SearchStatus,
 } from '@/types/chat'
+import type { CanvasMode, CanvasRevisionSummary } from '@/types/canvas'
 
 interface ChatState {
   conversations: Conversation[]
@@ -38,6 +40,8 @@ interface ChatState {
   documentsByConversation: Record<string, DocumentRef[]>
   webSearchEnabled: boolean
   setWebSearchEnabled: (enabled: boolean) => void
+  canvasEnabled: boolean
+  setCanvasEnabled: (enabled: boolean) => void
   selectedModelId: string
   setSelectedModelId: (id: string) => void
   getConversation: (id: string) => Conversation | undefined
@@ -50,7 +54,7 @@ interface ChatState {
   streamAssistantReply: (
     conversationId: string,
     history: Message[],
-    options?: { webSearch?: boolean; projectId?: string },
+    options?: { webSearch?: boolean; canvas?: boolean; projectId?: string },
   ) => void
   stopStreaming: () => void
   regenerateAssistantMessage: (
@@ -69,6 +73,8 @@ interface ChatState {
   ) => Promise<{ documentId: string }>
   removeDocument: (conversationId: string, documentId: string) => Promise<void>
   hasIndexingDocuments: (conversationId: string) => boolean
+  canvasRevisionsByConversation: Record<string, CanvasRevisionSummary[]>
+  loadCanvasRevisions: (conversationId: string) => Promise<void>
 }
 
 const ChatContext = createContext<ChatState | null>(null)
@@ -103,6 +109,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     Record<string, DocumentRef[]>
   >({})
   const loadedDocumentsRef = useRef<Set<string>>(new Set())
+  const [canvasRevisionsByConversation, setCanvasRevisionsByConversation] =
+    useState<Record<string, CanvasRevisionSummary[]>>({})
+  const loadedCanvasRevisionsRef = useRef<Set<string>>(new Set())
   const documentAbortControllersRef = useRef<Map<string, AbortController>>(
     new Map(),
   )
@@ -121,6 +130,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     }
   }, [])
+  const [canvasEnabled, setCanvasEnabledState] = useState(false)
+  const setCanvasEnabled = useCallback((enabled: boolean) => {
+    setCanvasEnabledState(enabled)
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(
+          'settings:canvas',
+          JSON.stringify(enabled),
+        )
+      } catch {
+        // ignore quota errors
+      }
+    }
+  }, [])
+  const canvasBridge = useCanvasBridge()
   const selectedModelIdRef = useRef(selectedModelId)
   const loadedMessagesRef = useRef<Set<string>>(new Set())
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -134,6 +158,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (storedModel) setSelectedModelId(JSON.parse(storedModel) as string)
       const storedSearch = window.localStorage.getItem('settings:webSearch')
       if (storedSearch) setWebSearchEnabledState(JSON.parse(storedSearch) as boolean)
+      const storedCanvas = window.localStorage.getItem('settings:canvas')
+      if (storedCanvas) setCanvasEnabledState(JSON.parse(storedCanvas) as boolean)
     } catch {
       // ignore
     }
@@ -556,6 +582,57 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const loadCanvasRevisions = useCallback(
+    async (conversationId: string) => {
+      if (loadedCanvasRevisionsRef.current.has(conversationId)) return
+      loadedCanvasRevisionsRef.current.add(conversationId)
+      try {
+        const res = await fetch(
+          `/api/canvas?conversationId=${encodeURIComponent(conversationId)}`,
+        )
+        if (!res.ok) throw new Error(`Failed (${res.status})`)
+        const { canvas, revisions } = (await res.json()) as {
+          canvas: { title: string } | null
+          revisions: Array<{
+            id: string
+            canvas_id: string
+            conversation_id: string
+            message_id: string | null
+            revision_index: number
+            word_count: number
+            source: 'ai' | 'user'
+            mode: CanvasMode
+            created_at: string
+          }>
+        }
+        const title = canvas?.title ?? 'Untitled canvas'
+        const summaries: CanvasRevisionSummary[] = revisions
+          .filter((r) => r.source === 'ai')
+          .map((r) => ({
+            id: r.id,
+            canvasId: r.canvas_id,
+            conversationId: r.conversation_id,
+            messageId: r.message_id,
+            revisionIndex: r.revision_index,
+            title,
+            wordCount: r.word_count,
+            source: r.source,
+            mode: r.mode,
+            createdAt: r.created_at,
+          }))
+          .sort((a, b) => a.revisionIndex - b.revisionIndex)
+        setCanvasRevisionsByConversation((prev) => ({
+          ...prev,
+          [conversationId]: summaries,
+        }))
+      } catch (err) {
+        console.error('Failed to load canvas revisions', err)
+        loadedCanvasRevisionsRef.current.delete(conversationId)
+      }
+    },
+    [],
+  )
+
   const updateDocument = useCallback(
     (
       conversationId: string,
@@ -830,11 +907,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     (
       conversationId: string,
       history: Message[],
-      options?: { webSearch?: boolean; projectId?: string },
+      options?: { webSearch?: boolean; canvas?: boolean; projectId?: string },
     ) => {
       const lastMsg = history[history.length - 1]
       const assistantId = makeId()
       const webSearch = options?.webSearch === true
+      const canvas = options?.canvas === true
       const assistantMessage: Message = {
         id: assistantId,
         role: 'assistant',
@@ -898,6 +976,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               messages: history,
               model: selectedModelIdRef.current,
               webSearch,
+              canvas,
               assistantMessageId: assistantId,
               conversationId,
               projectId: options?.projectId ?? null,
@@ -944,6 +1023,73 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   count?: number
                   phase?: 'reading' | 'extracted' | 'fallback'
                   sources?: { url: string; domain: string; title: string }[]
+                  canvasId?: string
+                  revisionId?: string
+                  revisionIndex?: number
+                  title?: string
+                  content?: string
+                  mode?: CanvasMode
+                }
+                if (parsed.type === 'canvas.start') {
+                  canvasBridge.beginAIRevision({
+                    conversationId,
+                    messageId: assistantId,
+                  })
+                  continue
+                }
+                if (parsed.type === 'canvas.delta') {
+                  if (parsed.delta) canvasBridge.pushAIDelta(parsed.delta)
+                  continue
+                }
+                if (parsed.type === 'canvas.complete') {
+                  if (parsed.canvasId && parsed.revisionId && typeof parsed.content === 'string') {
+                    const canvasId = parsed.canvasId
+                    const revisionId = parsed.revisionId
+                    const revisionIndex = parsed.revisionIndex ?? 0
+                    const title = parsed.title ?? 'Untitled canvas'
+                    const content = parsed.content
+                    const mode = parsed.mode ?? 'replace'
+                    canvasBridge.completeAIRevision({
+                      conversationId,
+                      canvasId,
+                      revisionId,
+                      revisionIndex,
+                      title,
+                      content,
+                      mode,
+                    })
+                    // Live-append summary so the inline card appears at the
+                    // assistant message without waiting for a reload.
+                    const summary: CanvasRevisionSummary = {
+                      id: revisionId,
+                      canvasId,
+                      conversationId,
+                      messageId: assistantId,
+                      revisionIndex,
+                      title,
+                      wordCount:
+                        content.match(/\S+/g)?.length ?? 0,
+                      source: 'ai',
+                      mode,
+                      createdAt: new Date().toISOString(),
+                    }
+                    setCanvasRevisionsByConversation((prev) => {
+                      const cur = prev[conversationId] ?? []
+                      // Avoid duplicates if the same revision arrives twice.
+                      if (cur.some((s) => s.id === revisionId)) return prev
+                      return {
+                        ...prev,
+                        [conversationId]: [...cur, summary].sort(
+                          (a, b) => a.revisionIndex - b.revisionIndex,
+                        ),
+                      }
+                    })
+                  }
+                  continue
+                }
+                if (parsed.type === 'canvas.error') {
+                  canvasBridge.abortAIRevision()
+                  continue
                 }
                 if (parsed.error) {
                   const errLine = `\n\n_[Error: ${parsed.error}]_`
@@ -1036,6 +1182,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             setIsStreaming(false)
             setStreamingMessageId(null)
           }
+          // Make sure the canvas panel doesn't keep showing "Menulis canvas…"
+          // if the stream ended before a canvas.complete arrived.
+          canvasBridge.abortAIRevision()
           if (accumulated || errored) {
             await persistAssistantMessage(conversationId, {
               ...assistantMessage,
@@ -1056,7 +1205,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
       })()
     },
-    [generateTitle, persistActiveLeaf, persistAssistantMessage, updateMessageContent],
+    [canvasBridge, generateTitle, persistActiveLeaf, persistAssistantMessage, updateMessageContent],
   )
 
   const stopStreaming = useCallback(() => {
@@ -1127,6 +1276,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       documentsByConversation,
       webSearchEnabled,
       setWebSearchEnabled,
+      canvasEnabled,
+      setCanvasEnabled,
       selectedModelId,
       setSelectedModelId,
       getConversation,
@@ -1144,6 +1295,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       uploadDocument,
       removeDocument,
       hasIndexingDocuments,
+      canvasRevisionsByConversation,
+      loadCanvasRevisions,
     }),
     [
       conversations,
@@ -1155,6 +1308,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       documentsByConversation,
       webSearchEnabled,
       setWebSearchEnabled,
+      canvasEnabled,
+      setCanvasEnabled,
       selectedModelId,
       getConversation,
       loadConversationMessages,
@@ -1171,6 +1326,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       uploadDocument,
       removeDocument,
       hasIndexingDocuments,
+      canvasRevisionsByConversation,
+      loadCanvasRevisions,
     ],
   )
 

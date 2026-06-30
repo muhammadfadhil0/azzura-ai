@@ -1,10 +1,17 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import type { Message } from '@/types/chat'
+import type { CurrentCanvasInfo } from './tools'
 import { buildSystemPrompt } from './system-prompt'
 
 export function toOpenAIMessages(
   messages: Message[],
-  opts: { webSearch: boolean },
+  opts: {
+    webSearch: boolean
+    hasRag?: boolean
+    canvas?: boolean
+    currentCanvas?: CurrentCanvasInfo | null
+    model?: string
+  },
 ): ChatCompletionMessageParam[] {
   const converted: ChatCompletionMessageParam[] = messages.map((m) => {
     const imageAttachments =
@@ -28,8 +35,31 @@ export function toOpenAIMessages(
     return { role: m.role, content: m.content }
   })
 
-  return [
-    { role: 'system', content: buildSystemPrompt({ webSearch: opts.webSearch }) },
-    ...converted,
+  const systemMessages: ChatCompletionMessageParam[] = [
+    {
+      role: 'system',
+      content: buildSystemPrompt({
+        webSearch: opts.webSearch,
+        hasRag: opts.hasRag,
+        canvas: opts.canvas,
+        hasCanvasContent: Boolean(opts.currentCanvas?.content),
+        model: opts.model,
+      }),
+    },
   ]
+
+  if (opts.canvas && opts.currentCanvas && opts.currentCanvas.content) {
+    const c = opts.currentCanvas
+    systemMessages.push({
+      role: 'system',
+      content: `CURRENT CANVAS (judul: "${c.title}", revisi #${c.revisionIndex}, sumber: ${c.source}):
+---
+${c.content}
+---
+
+Kalau user minta revisi terhadap canvas ini, panggil write_canvas lagi dengan mode="patch" (untuk perubahan lokal) atau "replace" (untuk tulis ulang). Selalu kirim FULL content baru, bukan diff.`,
+    })
+  }
+
+  return [...systemMessages, ...converted]
 }

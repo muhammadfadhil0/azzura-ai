@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { IconWorld, IconX } from '@tabler/icons-react'
+import { IconBrush, IconWorld, IconX } from '@tabler/icons-react'
 import { useChat } from '@/components/chat/chat-provider'
 import { ComposerAttachments } from '@/components/chat/composer-attachments'
 import { ComposerDocuments } from '@/components/chat/composer-documents'
@@ -54,8 +54,14 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   },
   ref,
 ) {
-  const { isStreaming, stopStreaming, webSearchEnabled, setWebSearchEnabled } =
-    useChat()
+  const {
+    isStreaming,
+    stopStreaming,
+    webSearchEnabled,
+    setWebSearchEnabled,
+    canvasEnabled,
+    setCanvasEnabled,
+  } = useChat()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [expanded, setExpanded] = useState(false)
@@ -104,7 +110,12 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     if (isStreaming) return
     const trimmed = text.trim()
     if (!trimmed && attachments.length === 0) return
-    onSend({ text: trimmed, attachments, webSearch: webSearchEnabled })
+    onSend({
+      text: trimmed,
+      attachments,
+      webSearch: webSearchEnabled,
+      canvas: canvasEnabled,
+    })
     setText('')
     setAttachments([])
   }
@@ -188,6 +199,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
             documentUploadDisabled={documentUploadDisabled}
             webSearchEnabled={webSearchEnabled}
             onToggleWebSearch={setWebSearchEnabled}
+            canvasEnabled={canvasEnabled}
+            onToggleCanvas={setCanvasEnabled}
           />
         </div>
 
@@ -214,6 +227,22 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
                   type="button"
                   onClick={() => setWebSearchEnabled(false)}
                   aria-label="Matikan pencarian web"
+                  className="ml-1 shrink-0"
+                >
+                  <IconX className="size-3 opacity-60 hover:opacity-100" />
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {canvasEnabled ? (
+            <div className="group/badge hidden h-8 cursor-default items-center rounded-full bg-foreground/5 px-2 text-xs text-foreground/80 md:flex">
+              <IconBrush className="size-3.5 shrink-0" />
+              <div className="flex max-w-0 items-center overflow-hidden transition-[max-width] duration-300 ease-in-out group-hover/badge:max-w-40">
+                <span className="whitespace-nowrap pl-1.5">Canvas</span>
+                <button
+                  type="button"
+                  onClick={() => setCanvasEnabled(false)}
+                  aria-label="Matikan canvas"
                   className="ml-1 shrink-0"
                 >
                   <IconX className="size-3 opacity-60 hover:opacity-100" />

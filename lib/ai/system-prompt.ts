@@ -1,3 +1,5 @@
+import { getPromptVariant } from './prompt-variants'
+
 const JAKARTA_LOCALE = 'id-ID'
 const JAKARTA_TZ = 'Asia/Jakarta'
 
@@ -15,8 +17,21 @@ function nowInJakarta(): string {
   return fmt.format(new Date())
 }
 
-export function buildSystemPrompt(opts: { webSearch: boolean }): string {
-  const { webSearch } = opts
+export function buildSystemPrompt(opts: {
+  webSearch: boolean
+  hasRag?: boolean
+  canvas?: boolean
+  hasCanvasContent?: boolean
+  model?: string
+}): string {
+  const {
+    webSearch,
+    hasRag = false,
+    canvas = false,
+    hasCanvasContent = false,
+    model,
+  } = opts
+  const variant = getPromptVariant(model)
   const today = nowInJakarta()
   const base = `Kamu adalah asisten AI yang membantu user dalam bahasa Indonesia (atau bahasa yang sama dengan user).
 
@@ -27,21 +42,37 @@ GAYA JAWAB:
 - Gunakan markdown bila membantu (heading, list, tabel, code block dengan language tag).
 - Jujur jika tidak tahu — jangan mengarang fakta.`
 
-  if (!webSearch) {
+  const toolBlocks: string[] = []
+
+  if (webSearch) {
+    toolBlocks.push(`TOOL: \`web_search(query)\` — tersedia. Pakai untuk pertanyaan yang butuh data real-time (jadwal, harga, berita, skor, kurs, cuaca, info terbaru). Setelah hasilnya datang sebagai tool message, ekstrak fakta spesifik dan jawab dengan sitasi inline format \`[domain](url)\`.
+
+TOOL: \`web_extract(urls)\` — tersedia. Pakai hanya kalau kamu sudah punya URL konkret yang ingin dibaca lebih dalam.`)
+  }
+
+  if (hasRag) {
+    toolBlocks.push(`TOOL: \`retrieve_documents(query)\` — tersedia. User upload dokumen di percakapan/project ini. Panggil tool ini setiap kali user bertanya tentang isi dokumen, ringkasan, atau pertanyaan yang mungkin tertulis di file mereka. Setelah hasilnya datang, jawab dengan sitasi marker \`[doc:DOCUMENT_ID#p=N]\` seperti yang dijelaskan di tool result.`)
+  }
+
+  if (canvas) {
+    toolBlocks.push(variant.canvasBlock({ hasCanvasContent }))
+  }
+
+  if (toolBlocks.length > 0) {
     return `${base}
 
-MODE: Web search NONAKTIF. Untuk pertanyaan yang butuh data terkini (jadwal, harga, berita, skor, cuaca, hasil pertandingan, kurs, dll), katakan terus terang bahwa kamu butuh pencarian web dan minta user mengaktifkan tombol web search. Jangan menebak data real-time.`
+=== TOOLS YANG TERSEDIA ===
+${toolBlocks.join('\n\n')}
+
+=== ATURAN MEMAKAI TOOL ===
+1. **Rumuskan parameter \`query\` dari KONTEKS percakapan, bukan dari pesan terakhir user mentah.** Pesan user terakhir bisa berupa kata kontinuasi/kontrol seperti "lanjutkan", "oke sudah saya aktifkan", "coba lagi", "lagi dong" — itu BUKAN topik pencarian.
+2. Contoh penting: kalau user di pesan sebelumnya tanya "jadwal MotoGP minggu ini", lalu sekarang kirim "oke sudah saya aktifkan internetnya, lanjutkan", maka query yang benar adalah \`"jadwal MotoGP minggu ini 2026"\` atau yang serupa — BUKAN \`"oke sudah saya aktifkan internetnya, lanjutkan"\`.
+3. Query harus self-contained: anggap tool tidak tahu sejarah percakapan.
+4. Kalau pertanyaan user sebenarnya tidak butuh tool (mis. obrolan ringan, definisi umum yang tidak butuh data terkini), jangan panggil tool — langsung jawab.
+5. Setelah tool dipanggil dan hasilnya masuk, sintesis hasilnya dengan baik dan kasih sitasi inline. Jangan menulis "berdasarkan hasil pencarian..." secara redundant — langsung sajikan jawaban dengan sumber di akhir kalimat.`
   }
 
   return `${base}
 
-MODE: Web search AKTIF. Sistem akan menyuntikkan hasil pencarian web ke percakapan sebelum kamu menjawab.
-
-ATURAN MEMAKAI HASIL WEB SEARCH:
-1. Hasil web search adalah sumber kebenaran terkini — PERCAYAI hasilnya di atas pengetahuan internalmu yang mungkin usang.
-2. Wajib mengekstrak fakta spesifik (tanggal, angka, nama, skor, jadwal) dari hasil pencarian. Jangan menjawab dengan generalisasi seperti "belum dimulai" jika hasil pencarian menunjukkan sebaliknya.
-3. Cantumkan sumber sebagai markdown link inline: \`[domain](url)\` langsung di akhir kalimat yang didukung sumber tersebut. JANGAN tulis kata "Sumber:", "Source:", atau label apapun sebelum link — cukup tempel link-nya saja.
-4. Jika hasil pencarian benar-benar tidak relevan atau kosong, katakan jujur — jangan mengarang.
-5. Jangan menulis "berdasarkan hasil pencarian, saya tidak menemukan..." jika sebenarnya hasilnya ada — baca ulang dengan teliti.
-6. Jika user bertanya "hari ini" / "sekarang", gabungkan tanggal real-time di atas dengan isi hasil pencarian.`
+MODE: Tidak ada tool yang aktif (web search OFF dan tidak ada dokumen). Untuk pertanyaan yang butuh data terkini (jadwal, harga, berita, skor, cuaca, hasil pertandingan, kurs, dll), katakan terus terang bahwa kamu butuh pencarian web dan minta user mengaktifkan tombol web search. Jangan menebak data real-time.`
 }
