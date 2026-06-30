@@ -1,6 +1,8 @@
 import type { Metadata } from 'next'
 import { Inter, Space_Grotesk } from 'next/font/google'
+import { Toaster } from '@/components/ui/sonner'
 import './globals.css'
+import 'katex/dist/katex.min.css'
 import { ThemeProvider } from '@/components/theme-provider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -33,7 +35,10 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <ThemeProvider>
-          <TooltipProvider>{children}</TooltipProvider>
+          <TooltipProvider>
+            {children}
+            <Toaster position="top-center" duration={2500} visibleToasts={1} />
+          </TooltipProvider>
         </ThemeProvider>
       </body>
     </html>

@@ -139,43 +139,24 @@
   }
 }
 
-@keyframes shimmer {
-  0%   { background-position: 150% 0; }
-  100% { background-position: -150% 0; }
-}
-
-@keyframes shimmer-fadein {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes shimmer-fadeout {
-  from { opacity: 1; transform: translateY(0); }
-  to   { opacity: 0; transform: translateY(-4px); }
-}
-
-.shimmer-text {
-  background: linear-gradient(
-    90deg,
-    var(--muted-foreground) 0%,
-    var(--muted-foreground) 20%,
-    var(--foreground) 45%,
-    var(--foreground) 55%,
-    var(--muted-foreground) 80%,
-    var(--muted-foreground) 100%
-  );
-  background-size: 300% 100%;
-  -webkit-background-clip: text;
-          background-clip: text;
-  color: transparent;
-  font-weight: 500;
-  animation: shimmer 2.2s linear infinite;
-}
-
-.shimmer-label-in {
-  animation: shimmer-fadein 0.25s ease-out both;
-}
-
-.shimmer-label-out {
-  animation: shimmer-fadeout 0.2s ease-in both;
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  [data-canvas-print],
+  [data-canvas-print] * {
+    visibility: visible !important;
+  }
+  [data-canvas-print] {
+    position: absolute;
+    inset: 0;
+    padding: 24mm;
+    font-size: 11pt;
+    line-height: 1.6;
+    background: white;
+    color: black;
+  }
+  [data-canvas-print] textarea {
+    display: none !important;
+  }
 }
