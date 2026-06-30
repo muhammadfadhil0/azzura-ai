@@ -2,15 +2,18 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { Message } from '@/types/chat'
 import type { CurrentCanvasInfo } from './tools'
 import { buildSystemPrompt } from './system-prompt'
+import type { LoadedSkill } from './skills/types'
 
 export function toOpenAIMessages(
   messages: Message[],
   opts: {
     webSearch: boolean
     hasRag?: boolean
+    ragDocumentNames?: string[]
     canvas?: boolean
     currentCanvas?: CurrentCanvasInfo | null
     model?: string
+    skills?: LoadedSkill[]
   },
 ): ChatCompletionMessageParam[] {
   const converted: ChatCompletionMessageParam[] = messages.map((m) => {
@@ -41,9 +44,11 @@ export function toOpenAIMessages(
       content: buildSystemPrompt({
         webSearch: opts.webSearch,
         hasRag: opts.hasRag,
+        ragDocumentNames: opts.ragDocumentNames,
         canvas: opts.canvas,
         hasCanvasContent: Boolean(opts.currentCanvas?.content),
         model: opts.model,
+        skills: opts.skills,
       }),
     },
   ]

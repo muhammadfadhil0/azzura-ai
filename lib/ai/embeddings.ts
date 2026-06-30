@@ -7,6 +7,8 @@ export const EMBEDDING_MODEL =
   'text-embedding-3-small'
 
 const BATCH_SIZE = 96
+const MAX_RETRIES = 4
+const RETRY_BASE_MS = 1000
 
 let _embedClient: OpenAI | null = null
 
@@ -25,27 +27,42 @@ function getEmbedClient(): OpenAI {
   return _embedClient
 }
 
+function is429(err: unknown): boolean {
+  if (err instanceof OpenAI.APIError) return err.status === 429
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg.includes('429')
+}
+
+async function embedBatchWithRetry(client: OpenAI, batch: string[]): Promise<number[][]> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      // exponential backoff: 1s, 2s, 4s, 8s
+      await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** (attempt - 1)))
+    }
+    try {
+      const res = await client.embeddings.create({ model: EMBEDDING_MODEL, input: batch })
+      return res.data.map((item) => item.embedding as number[])
+    } catch (err) {
+      lastErr = err
+      if (!is429(err)) break
+    }
+  }
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr)
+  throw new Error(
+    `Embedding call failed (model="${EMBEDDING_MODEL}"). ${msg}. ` +
+      `Pastikan endpoint /embeddings tersedia — set EMBEDDINGS_API_KEY (+ optional EMBEDDINGS_BASE_URL) untuk pakai OpenAI langsung.`,
+  )
+}
+
 export async function embedTexts(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
   const client = getEmbedClient()
   const out: number[][] = []
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE)
-    try {
-      const res = await client.embeddings.create({
-        model: EMBEDDING_MODEL,
-        input: batch,
-      })
-      for (const item of res.data) {
-        out.push(item.embedding as number[])
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new Error(
-        `Embedding call failed (model="${EMBEDDING_MODEL}"). ${msg}. ` +
-          `Pastikan endpoint /embeddings tersedia — set EMBEDDINGS_API_KEY (+ optional EMBEDDINGS_BASE_URL) untuk pakai OpenAI langsung.`,
-      )
-    }
+    const embeddings = await embedBatchWithRetry(client, batch)
+    out.push(...embeddings)
   }
   return out
 }

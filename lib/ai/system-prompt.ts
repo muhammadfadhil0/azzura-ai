@@ -1,4 +1,5 @@
 import { getPromptVariant } from './prompt-variants'
+import type { LoadedSkill } from './skills/types'
 
 const JAKARTA_LOCALE = 'id-ID'
 const JAKARTA_TZ = 'Asia/Jakarta'
@@ -20,16 +21,20 @@ function nowInJakarta(): string {
 export function buildSystemPrompt(opts: {
   webSearch: boolean
   hasRag?: boolean
+  ragDocumentNames?: string[]
   canvas?: boolean
   hasCanvasContent?: boolean
   model?: string
+  skills?: LoadedSkill[]
 }): string {
   const {
     webSearch,
     hasRag = false,
+    ragDocumentNames = [],
     canvas = false,
     hasCanvasContent = false,
     model,
+    skills = [],
   } = opts
   const variant = getPromptVariant(model)
   const today = nowInJakarta()
@@ -51,11 +56,29 @@ TOOL: \`web_extract(urls)\` — tersedia. Pakai hanya kalau kamu sudah punya URL
   }
 
   if (hasRag) {
-    toolBlocks.push(`TOOL: \`retrieve_documents(query)\` — tersedia. User upload dokumen di percakapan/project ini. Panggil tool ini setiap kali user bertanya tentang isi dokumen, ringkasan, atau pertanyaan yang mungkin tertulis di file mereka. Setelah hasilnya datang, jawab dengan sitasi marker \`[doc:DOCUMENT_ID#p=N]\` seperti yang dijelaskan di tool result.`)
+    const docList = ragDocumentNames.length > 0
+      ? `\n\nDOKUMEN YANG TERSEDIA:\n${ragDocumentNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}`
+      : ''
+    toolBlocks.push(`TOOL: \`retrieve_documents(query)\` — tersedia. User memiliki dokumen/catatan di percakapan/project ini.${docList}
+
+ATURAN KRITIS — WAJIB panggil \`retrieve_documents\` LEBIH DULU sebelum menjawab apapun yang berkaitan dengan:
+- Topik, isi, atau informasi yang mungkin ada di dokumen user
+- Pertanyaan faktual atau spesifik (nama, tanggal, angka, prosedur, definisi)
+- Ringkasan atau penjelasan tentang konten project
+- Pertanyaan "apa", "siapa", "bagaimana", "kapan" yang jawabannya bisa ada di dokumen
+JANGAN langsung menjawab dari pengetahuan umum jika dokumen tersedia — cek dulu.
+
+Setelah hasilnya datang, jawab dengan sitasi marker \`[doc:DOCUMENT_ID#p=N]\` seperti yang dijelaskan di tool result. Jika retrieve_documents tidak menemukan info relevan, baru boleh jawab dari pengetahuan umum dan beritahu user.`)
   }
 
   if (canvas) {
     toolBlocks.push(variant.canvasBlock({ hasCanvasContent }))
+  }
+
+  for (const skill of skills) {
+    if (skill.systemInstructions.trim()) {
+      toolBlocks.push(skill.systemInstructions.trim())
+    }
   }
 
   if (toolBlocks.length > 0) {
