@@ -29,6 +29,7 @@ import type {
   SearchStatus,
 } from '@/types/chat'
 import type { CanvasMode, CanvasRevisionSummary } from '@/types/canvas'
+import type { GeneratedFileSummary } from '@/types/skills'
 
 interface ChatState {
   conversations: Conversation[]
@@ -75,6 +76,8 @@ interface ChatState {
   hasIndexingDocuments: (conversationId: string) => boolean
   canvasRevisionsByConversation: Record<string, CanvasRevisionSummary[]>
   loadCanvasRevisions: (conversationId: string) => Promise<void>
+  generatedFilesByConversation: Record<string, GeneratedFileSummary[]>
+  loadGeneratedFiles: (conversationId: string) => Promise<void>
 }
 
 const ChatContext = createContext<ChatState | null>(null)
@@ -112,6 +115,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [canvasRevisionsByConversation, setCanvasRevisionsByConversation] =
     useState<Record<string, CanvasRevisionSummary[]>>({})
   const loadedCanvasRevisionsRef = useRef<Set<string>>(new Set())
+  const [generatedFilesByConversation, setGeneratedFilesByConversation] =
+    useState<Record<string, GeneratedFileSummary[]>>({})
+  const loadedGeneratedFilesRef = useRef<Set<string>>(new Set())
   const documentAbortControllersRef = useRef<Map<string, AbortController>>(
     new Map(),
   )
@@ -525,7 +531,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setConversations((prev) => prev.filter((c) => c.id !== id))
       loadedMessagesRef.current.delete(id)
       loadedDocumentsRef.current.delete(id)
+      loadedCanvasRevisionsRef.current.delete(id)
+      loadedGeneratedFilesRef.current.delete(id)
       setDocumentsByConversation((prev) => {
+        if (!(id in prev)) return prev
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      setCanvasRevisionsByConversation((prev) => {
+        if (!(id in prev)) return prev
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      setGeneratedFilesByConversation((prev) => {
         if (!(id in prev)) return prev
         const next = { ...prev }
         delete next[id]
@@ -628,6 +648,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         console.error('Failed to load canvas revisions', err)
         loadedCanvasRevisionsRef.current.delete(conversationId)
+      }
+    },
+    [],
+  )
+
+  const loadGeneratedFiles = useCallback(
+    async (conversationId: string) => {
+      if (loadedGeneratedFilesRef.current.has(conversationId)) return
+      loadedGeneratedFilesRef.current.add(conversationId)
+      try {
+        const res = await fetch(
+          `/api/generated-files?conversationId=${encodeURIComponent(conversationId)}`,
+        )
+        if (!res.ok) throw new Error(`Failed (${res.status})`)
+        const { files } = (await res.json()) as {
+          files: GeneratedFileSummary[]
+        }
+        setGeneratedFilesByConversation((prev) => ({
+          ...prev,
+          [conversationId]: files,
+        }))
+      } catch (err) {
+        console.error('Failed to load generated files', err)
+        loadedGeneratedFilesRef.current.delete(conversationId)
       }
     },
     [],
@@ -1029,12 +1073,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   title?: string
                   content?: string
                   mode?: CanvasMode
+                  executionId?: string
+                  skillSlug?: string
+                  toolName?: string
+                  fileName?: string
+                  mimeType?: string
+                  sizeBytes?: number
+                  downloadUrl?: string
+                  canvasRevisionId?: string | null
                 }
                 if (parsed.type === 'canvas.start') {
                   canvasBridge.beginAIRevision({
                     conversationId,
                     messageId: assistantId,
                   })
+                  setSearchStatuses((s) => ({
+                    ...s,
+                    [assistantId]: { status: 'writing_canvas' },
+                  }))
                   continue
                 }
                 if (parsed.type === 'canvas.delta') {
@@ -1091,6 +1147,47 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   canvasBridge.abortAIRevision()
                   continue
                 }
+                if (parsed.type === 'file.generated') {
+                  if (
+                    parsed.executionId &&
+                    parsed.skillSlug &&
+                    parsed.fileName &&
+                    parsed.mimeType &&
+                    parsed.downloadUrl
+                  ) {
+                    const summary: GeneratedFileSummary = {
+                      id: parsed.executionId,
+                      conversationId,
+                      messageId: assistantId,
+                      skillSlug: parsed.skillSlug,
+                      fileName: parsed.fileName,
+                      mimeType: parsed.mimeType,
+                      sizeBytes: parsed.sizeBytes ?? null,
+                      downloadUrl: parsed.downloadUrl,
+                      canvasRevisionId: parsed.canvasRevisionId ?? null,
+                      createdAt: new Date().toISOString(),
+                    }
+                    setGeneratedFilesByConversation((prev) => {
+                      const cur = prev[conversationId] ?? []
+                      if (cur.some((s) => s.id === summary.id)) return prev
+                      return { ...prev, [conversationId]: [...cur, summary] }
+                    })
+                  }
+                  continue
+                }
+                if (parsed.type === 'skill.start') {
+                  setSearchStatuses((s) => ({
+                    ...s,
+                    [assistantId]: {
+                      status: 'running_skill',
+                      skillName: typeof parsed.toolName === 'string' ? parsed.toolName : undefined,
+                    },
+                  }))
+                  continue
+                }
+                if (parsed.type === 'skill.error') {
+                  continue
+                }
                 if (parsed.error) {
                   const errLine = `\n\n_[Error: ${parsed.error}]_`
                   accumulated += errLine
@@ -1098,6 +1195,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   errored = true
                   finished = true
                   break
+                }
+                if (parsed.type === 'rag.start') {
+                  setSearchStatuses((s) => ({
+                    ...s,
+                    [assistantId]: {
+                      status: 'reading_docs',
+                      docQuery: typeof parsed.query === 'string' ? parsed.query : undefined,
+                    },
+                  }))
+                  continue
+                }
+                if (parsed.type === 'rag.complete') {
+                  setSearchStatuses((s) => ({
+                    ...s,
+                    [assistantId]: { ...s[assistantId], status: 'done' },
+                  }))
+                  continue
                 }
                 if (parsed.type === 'web_search.start') {
                   setSearchStatuses((s) => ({
@@ -1297,6 +1411,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       hasIndexingDocuments,
       canvasRevisionsByConversation,
       loadCanvasRevisions,
+      generatedFilesByConversation,
+      loadGeneratedFiles,
     }),
     [
       conversations,
@@ -1328,6 +1444,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       hasIndexingDocuments,
       canvasRevisionsByConversation,
       loadCanvasRevisions,
+      generatedFilesByConversation,
+      loadGeneratedFiles,
     ],
   )
 

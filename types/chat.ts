@@ -54,12 +54,14 @@ export interface SearchSource {
 }
 
 export interface SearchStatus {
-  status: 'searching' | 'synthesizing' | 'done'
+  status: 'searching' | 'synthesizing' | 'reading_docs' | 'writing_canvas' | 'running_skill' | 'done'
   query?: string
   currentDomain?: string
   phase?: SearchPhase
   count?: number
   sources?: SearchSource[]
+  docQuery?: string
+  skillName?: string
 }
 
 export type DocumentStatus =

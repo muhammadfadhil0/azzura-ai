@@ -8,11 +8,12 @@ import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { CanvasRevisionCard } from '@/components/canvas/canvas-revision-card'
+import { GeneratedFileCard } from '@/components/chat/generated-file-card'
 import { useChat } from '@/components/chat/chat-provider'
 import { useDocumentViewer } from '@/components/chat/document-viewer'
 import { MessageActions } from '@/components/chat/message-actions'
 import { MessageAttachments } from '@/components/chat/message-attachments'
-import type { Message, RagCitation } from '@/types/chat'
+import type { Message, RagCitation, SearchStatus } from '@/types/chat'
 
 const CITATION_RE =
   /\[doc:([0-9a-f-]{36})(?:#([a-z]+)=([^\]]+))?\]/gi
@@ -76,26 +77,64 @@ function Favicon({ domain }: { domain: string }) {
 const SOURCE_BADGE =
   'inline-flex h-5 items-center gap-1 overflow-hidden rounded-full border border-border bg-surface px-2 align-middle text-xs leading-none text-muted-foreground no-underline transition-colors hover:border-foreground/30 hover:text-foreground'
 
-function useFadingLabel(label: string) {
-  const [displayed, setDisplayed] = useState(label)
-  const [phase, setPhase] = useState<'in' | 'out'>('in')
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+const GENERAL_LABELS = [
+  'Sedang berpikir...',
+  'Membaca konteks...',
+  'Menganalisis pertanyaan...',
+  'Menyiapkan jawaban...',
+]
 
+function getSpecificLabel(search: SearchStatus | undefined): string | null {
+  if (!search || search.status === 'done') return null
+  if (search.status === 'synthesizing') {
+    return search.count ? `Membandingkan ${search.count} sumber...` : 'Menyusun jawaban...'
+  }
+  if (search.status === 'searching') {
+    if (search.phase === 'extracted' && search.currentDomain) return `Membaca isi ${search.currentDomain}...`
+    if (search.phase === 'reading' && search.currentDomain) return `Membuka ${search.currentDomain}...`
+    if (search.phase === 'fallback') return 'Mengambil cuplikan halaman...'
+    if (search.query) return `Mencari "${search.query}"...`
+    return 'Mencari di web...'
+  }
+  if (search.status === 'reading_docs') {
+    return search.docQuery ? `Membaca konteks: "${search.docQuery}"...` : 'Membaca dokumen...'
+  }
+  if (search.status === 'writing_canvas') return 'Menulis canvas...'
+  if (search.status === 'running_skill') {
+    return search.skillName ? `Menjalankan ${search.skillName}...` : 'Menjalankan skill...'
+  }
+  return null
+}
+
+function useProcessingLabel(search: SearchStatus | undefined, isActive: boolean): { label: string; opacity: number } {
+  const [cycleIdx, setCycleIdx] = useState(0)
+  const [opacity, setOpacity] = useState(1)
+  const mountedRef = useRef(false)
+
+  const specificLabel = getSpecificLabel(search)
+  const label = specificLabel ?? GENERAL_LABELS[cycleIdx]
+
+  // Cycle general labels every 2.5s when no specific tool is running
   useEffect(() => {
-    if (label === displayed && phase === 'in') return
-    if (timerRef.current) clearTimeout(timerRef.current)
-    setPhase('out')
-    timerRef.current = setTimeout(() => {
-      setDisplayed(label)
-      setPhase('in')
-    }, 220)
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
+    if (!isActive || specificLabel !== null) return
+    const id = setInterval(() => {
+      setCycleIdx((i) => (i + 1) % GENERAL_LABELS.length)
+    }, 2500)
+    return () => clearInterval(id)
+  }, [isActive, specificLabel])
+
+  // Fade on label change (skip on first mount)
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    setOpacity(0)
+    const t = setTimeout(() => setOpacity(1), 160)
+    return () => clearTimeout(t)
   }, [label])
 
-  return { displayed, phase }
+  return { label, opacity }
 }
 
 interface Props {
@@ -119,36 +158,33 @@ export function MessageAssistant({
   onNextSibling,
   onRegenerate,
 }: Props) {
-  const { searchStatuses, canvasRevisionsByConversation } = useChat()
+  const {
+    searchStatuses,
+    canvasRevisionsByConversation,
+    generatedFilesByConversation,
+  } = useChat()
   const { openDocument } = useDocumentViewer()
+  const generatedFiles = conversationId
+    ? (generatedFilesByConversation[conversationId] ?? []).filter(
+        (f) => f.messageId === message.id,
+      )
+    : []
+  // Canvas revisions that belong to a generated file are already accessible
+  // via the file card's "Lihat" button — suppress the duplicate canvas card.
+  const fileOwnedRevisionIds = new Set(
+    generatedFiles
+      .map((f) => f.canvasRevisionId)
+      .filter((id): id is string => Boolean(id)),
+  )
   const canvasRevisions = conversationId
     ? (canvasRevisionsByConversation[conversationId] ?? []).filter(
-        (r) => r.messageId === message.id,
+        (r) => r.messageId === message.id && !fileOwnedRevisionIds.has(r.id),
       )
     : []
   const search = searchStatuses[message.id]
   const renderedContent = transformCitations(message.content)
   const showThinking = isStreaming && message.content === ''
-  const showSearching =
-    showThinking &&
-    (search?.status === 'searching' || search?.status === 'synthesizing')
-
-  let searchingLabel = 'Mencari di web...'
-  if (search?.status === 'synthesizing') {
-    searchingLabel = search.count
-      ? `Membandingkan ${search.count} sumber...`
-      : 'Menyusun jawaban...'
-  } else if (search?.phase === 'extracted' && search.currentDomain) {
-    searchingLabel = `Membaca isi ${search.currentDomain}...`
-  } else if (search?.phase === 'reading' && search.currentDomain) {
-    searchingLabel = `Membuka ${search.currentDomain}...`
-  } else if (search?.phase === 'fallback') {
-    searchingLabel = 'Extract gagal, pakai cuplikan saja...'
-  } else if (search?.query) {
-    searchingLabel = `Mencari "${search.query}"...`
-  }
-
-  const { displayed: fadingLabel, phase: fadePhase } = useFadingLabel(searchingLabel)
+  const { label: processingLabel, opacity: labelOpacity } = useProcessingLabel(search, showThinking)
 
   return (
     <div className="group/msg flex animate-in fade-in slide-in-from-bottom-2 gap-3 duration-200">
@@ -156,12 +192,15 @@ export function MessageAssistant({
         {message.attachments && message.attachments.length > 0 ? (
           <MessageAttachments attachments={message.attachments} />
         ) : null}
-        {showSearching ? (
-          <p className="shimmer py-2 text-sm text-muted-foreground" role="status" aria-live="polite">
-            {fadingLabel}
+        {showThinking ? (
+          <p
+            className="shimmer py-2 text-sm text-muted-foreground"
+            style={{ opacity: labelOpacity, transition: 'opacity 0.16s ease' }}
+            role="status"
+            aria-live="polite"
+          >
+            {processingLabel}
           </p>
-        ) : showThinking ? (
-          <ThinkingDots />
         ) : (
           <div
             className={[
@@ -243,6 +282,13 @@ export function MessageAssistant({
             ))}
           </div>
         ) : null}
+        {generatedFiles.length > 0 && !isStreaming ? (
+          <div className="mt-2 flex flex-col gap-1.5">
+            {generatedFiles.map((f) => (
+              <GeneratedFileCard key={f.id} file={f} />
+            ))}
+          </div>
+        ) : null}
         {!isStreaming ? (
           <div className="flex flex-wrap items-center gap-1">
             <MessageActions message={message} onRegenerate={onRegenerate} />
@@ -317,19 +363,6 @@ function SiblingNav({
   )
 }
 
-function ThinkingDots() {
-  return (
-    <div
-      className="flex items-center gap-1 py-2"
-      role="status"
-      aria-label="AI is thinking"
-    >
-      <span className="size-1.5 animate-bounce rounded-full bg-foreground/40 [animation-delay:-0.3s]" />
-      <span className="size-1.5 animate-bounce rounded-full bg-foreground/40 [animation-delay:-0.15s]" />
-      <span className="size-1.5 animate-bounce rounded-full bg-foreground/40" />
-    </div>
-  )
-}
 
 function TypingCaret() {
   return (

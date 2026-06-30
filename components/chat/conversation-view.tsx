@@ -30,6 +30,7 @@ export function ConversationView({ id, projectId }: { id: string; projectId?: st
     documentsByConversation,
     loadDocuments,
     loadCanvasRevisions,
+    loadGeneratedFiles,
     uploadDocument,
     removeDocument,
     hasIndexingDocuments,
@@ -47,8 +48,16 @@ export function ConversationView({ id, projectId }: { id: string; projectId?: st
       void loadConversationMessages(id)
       void loadDocuments(id)
       void loadCanvasRevisions(id)
+      void loadGeneratedFiles(id)
     }
-  }, [conversation, id, loadConversationMessages, loadDocuments, loadCanvasRevisions])
+  }, [
+    conversation,
+    id,
+    loadConversationMessages,
+    loadDocuments,
+    loadCanvasRevisions,
+    loadGeneratedFiles,
+  ])
 
   const handleDocumentPicked = (file: File) => {
     void uploadDocument(file, id).catch((err) => {

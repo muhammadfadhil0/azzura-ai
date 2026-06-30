@@ -14,10 +14,14 @@ import {
   execWriteCanvas,
   getCurrentCanvas,
 } from '@/lib/ai/tools'
+import { executeSkillCall } from '@/lib/ai/skills/execute'
+import { getActiveSkills } from '@/lib/ai/skills/registry'
+import type { LoadedSkill } from '@/lib/ai/skills/types'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient as createServerSupabase } from '@/lib/supabase/server'
 import type { Message } from '@/types/chat'
 import type { CanvasMode } from '@/types/canvas'
+import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions'
 
 const MAX_TOOL_ITERATIONS = 4
 
@@ -130,34 +134,33 @@ export async function POST(req: Request) {
       ? body.projectId.trim()
       : null
 
-  // Resolve current user from cookie session (needed for canvas inserts).
-  // Fallback: look up the conversation's owner via admin client if auth.getUser
-  // didn't return a user — keeps canvas working in dev where cookies may be flaky.
+  // Resolve current user from cookie session. Needed for canvas + skill
+  // executions. Fallback to looking up the conversation's owner via admin
+  // client if auth.getUser didn't return a user — keeps things working in dev
+  // where cookies may be flaky.
   let userId: string | null = null
-  if (canvas) {
+  try {
+    const supabase = await createServerSupabase()
+    const { data } = await supabase.auth.getUser()
+    userId = data.user?.id ?? null
+  } catch {
+    userId = null
+  }
+  if (!userId && conversationId) {
     try {
-      const supabase = await createServerSupabase()
-      const { data } = await supabase.auth.getUser()
-      userId = data.user?.id ?? null
-    } catch {
-      userId = null
+      const admin = createAdminClient()
+      const { data } = await admin
+        .from('conversations')
+        .select('user_id')
+        .eq('id', conversationId)
+        .maybeSingle()
+      userId = (data?.user_id as string | undefined) ?? null
+    } catch (err) {
+      console.error('userId fallback failed', err)
     }
-    if (!userId && conversationId) {
-      try {
-        const admin = createAdminClient()
-        const { data } = await admin
-          .from('conversations')
-          .select('user_id')
-          .eq('id', conversationId)
-          .maybeSingle()
-        userId = (data?.user_id as string | undefined) ?? null
-      } catch (err) {
-        console.error('canvas userId fallback failed', err)
-      }
-    }
-    if (!userId) {
-      console.warn('canvas: no userId resolved; write_canvas will fail')
-    }
+  }
+  if (!userId) {
+    console.warn('no userId resolved; canvas + skill writes will be skipped')
   }
 
   const encoder = new TextEncoder()
@@ -170,22 +173,37 @@ export async function POST(req: Request) {
       }
 
       try {
-        const ragAvailable = await hasReadyDocuments(conversationId, projectId)
+        const { available: ragAvailable, documentNames: ragDocumentNames } = await hasReadyDocuments(conversationId, projectId)
         const currentCanvas = canvas
           ? await getCurrentCanvas(conversationId)
           : null
-        const tools = buildTools({
-          webSearchEnabled: webSearch,
-          ragAvailable,
-          canvasEnabled: canvas,
-        })
+        const skills = await getActiveSkills()
+        const skillToolByName = new Map<string, LoadedSkill>()
+        for (const skill of skills) {
+          for (const tool of skill.tools) {
+            skillToolByName.set(
+              (tool as ChatCompletionFunctionTool).function.name,
+              skill,
+            )
+          }
+        }
+        const tools = [
+          ...buildTools({
+            webSearchEnabled: webSearch,
+            ragAvailable,
+            canvasEnabled: canvas,
+          }),
+          ...skills.flatMap((s) => s.tools),
+        ]
 
         const convo: ChatCompletionMessageParam[] = toOpenAIMessages(messages, {
           webSearch,
           hasRag: ragAvailable,
+          ragDocumentNames,
           canvas,
           currentCanvas,
           model,
+          skills,
         })
 
         const client = isGeminiModel(model) ? gemini : adacode
@@ -415,6 +433,69 @@ export async function POST(req: Request) {
                   }
                 }
 
+                const skill = skillToolByName.get(tc.name)
+                if (skill) {
+                  if (!userId) {
+                    return {
+                      toolCallId,
+                      content:
+                        'TOOL ERROR: tidak bisa identifikasi user untuk eksekusi skill. Minta user untuk login ulang.',
+                    }
+                  }
+                  send({
+                    type: 'skill.start',
+                    messageId: assistantMessageId,
+                    skillSlug: skill.slug,
+                    toolName: tc.name,
+                  })
+                  const result = await executeSkillCall({
+                    skill,
+                    args,
+                    ctx: {
+                      userId,
+                      conversationId,
+                      assistantMessageId: assistantMessageId || null,
+                      signal: req.signal,
+                      toolCallId,
+                    },
+                  })
+                  if (result.canvasRevision) {
+                    send({
+                      type: 'canvas.complete',
+                      messageId: assistantMessageId,
+                      canvasId: result.canvasRevision.canvasId,
+                      revisionId: result.canvasRevision.revisionId,
+                      revisionIndex: result.canvasRevision.revisionIndex,
+                      title: result.canvasRevision.title,
+                      content: result.canvasRevision.content,
+                      mode: result.canvasRevision.mode,
+                    })
+                  }
+                  if (result.ok) {
+                    send({
+                      type: 'file.generated',
+                      messageId: assistantMessageId,
+                      executionId: result.executionId,
+                      skillSlug: result.skillSlug,
+                      fileName: result.fileName,
+                      mimeType: result.mimeType,
+                      sizeBytes: result.sizeBytes,
+                      downloadUrl: `/api/generated-files/${result.executionId}/download`,
+                      canvasRevisionId:
+                        result.canvasRevision?.revisionId ?? null,
+                    })
+                  } else {
+                    send({
+                      type: 'skill.error',
+                      messageId: assistantMessageId,
+                      executionId: result.executionId,
+                      skillSlug: result.skillSlug,
+                      error: result.llmFeedback,
+                    })
+                  }
+                  return { toolCallId, content: result.llmFeedback }
+                }
+
                 return {
                   toolCallId,
                   content: `TOOL ERROR: tool "${tc.name}" tidak dikenal.`,
@@ -468,28 +549,30 @@ export async function POST(req: Request) {
 async function hasReadyDocuments(
   conversationId: string | null,
   projectId: string | null,
-): Promise<boolean> {
-  if (!conversationId && !projectId) return false
+): Promise<{ available: boolean; documentNames: string[] }> {
+  if (!conversationId && !projectId) return { available: false, documentNames: [] }
   try {
     const admin = createAdminClient()
     const filters: string[] = []
     if (conversationId) filters.push(`conversation_id.eq.${conversationId}`)
     if (projectId) filters.push(`project_id.eq.${projectId}`)
 
-    const { count, error } = await admin
+    const { data, error } = await admin
       .from('documents')
-      .select('id', { count: 'exact', head: true })
+      .select('name')
       .or(filters.join(','))
       .eq('status', 'ready')
+      .limit(20)
 
     if (error) {
       console.error('hasReadyDocuments check failed', error)
-      return false
+      return { available: false, documentNames: [] }
     }
-    return (count ?? 0) > 0
+    const names = (data ?? []).map((d) => d.name as string).filter(Boolean)
+    return { available: names.length > 0, documentNames: names }
   } catch (err) {
     console.error('hasReadyDocuments check threw', err)
-    return false
+    return { available: false, documentNames: [] }
   }
 }
 

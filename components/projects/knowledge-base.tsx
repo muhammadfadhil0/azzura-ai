@@ -36,8 +36,10 @@ function StatusChip({ doc }: { doc: ProjectDocument }) {
     const parts: string[] = []
     if (doc.wordCount) parts.push(`${doc.wordCount.toLocaleString('id-ID')} kata`)
     if (doc.pageCount) parts.push(`${doc.pageCount} hlm`)
+    if (parts.length === 0 && doc.chunkCount) parts.push(`${doc.chunkCount} chunk`)
     return (
       <span className="flex items-center gap-1 text-xs text-muted-foreground">
+        <IconCheck className="size-3" />
         {parts.length > 0 ? parts.join(' · ') : 'Ready'}
       </span>
     )
@@ -189,7 +191,11 @@ export function KnowledgeBase() {
                 <StatusChip doc={doc} />
               </div>
               <button
-                onClick={() => removeProjectDocument(doc.id)}
+                onClick={() => {
+                  if (confirm(`Hapus "${doc.name}"? File tidak bisa dikembalikan.`)) {
+                    removeProjectDocument(doc.id)
+                  }
+                }}
                 className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
                 aria-label="Remove"
               >
