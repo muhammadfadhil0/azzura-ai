@@ -128,6 +128,79 @@ export async function retrieveCombinedChunks(
   return { chunks: uniqueChunks, docs: uniqueDocs }
 }
 
+export interface OutlineEntry {
+  heading: string
+  page: number | null
+  chunk_index: number
+  document_id: string
+}
+
+export async function retrieveOutline(
+  conversationId: string | null,
+  projectId: string | null,
+): Promise<{ entries: OutlineEntry[]; docs: RetrievedDoc[] }> {
+  const admin = createAdminClient()
+  const filters: string[] = []
+  if (conversationId) filters.push(`conversation_id.eq.${conversationId}`)
+  if (projectId) filters.push(`project_id.eq.${projectId}`)
+  if (filters.length === 0) return { entries: [], docs: [] }
+
+  const { data, error } = await admin
+    .from('document_chunks')
+    .select('heading, page, chunk_index, document_id')
+    .or(filters.join(','))
+    .not('heading', 'is', null)
+    .order('chunk_index', { ascending: true })
+
+  if (error || !data) {
+    console.error('retrieveOutline failed', error)
+    return { entries: [], docs: [] }
+  }
+
+  const seen = new Set<string>()
+  const entries: OutlineEntry[] = []
+  for (const row of data as OutlineEntry[]) {
+    const key = `${row.document_id}::${row.heading}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      entries.push(row)
+    }
+  }
+
+  const docIds = Array.from(new Set(entries.map((e) => e.document_id)))
+  const { data: docs } = await admin.from('documents').select('id, name').in('id', docIds)
+
+  return {
+    entries,
+    docs: ((docs ?? []) as Array<{ id: string; name: string }>).map((d) => ({ id: d.id, name: d.name })),
+  }
+}
+
+export async function execRetrieveOutline(ctx: {
+  conversationId: string | null
+  projectId: string | null
+}): Promise<{ count: number; docs: RetrievedDoc[]; contentForLLM: string }> {
+  const { entries, docs } = await retrieveOutline(ctx.conversationId, ctx.projectId)
+  if (entries.length === 0) {
+    return {
+      count: 0,
+      docs: [],
+      contentForLLM:
+        'Tidak ditemukan heading/struktur di dokumen yang diupload. Kemungkinan dokumen hanya berupa teks polos tanpa judul bab.',
+    }
+  }
+
+  const docsById = new Map(docs.map((d) => [d.id, d.name]))
+  const lines = entries.map((e, i) => {
+    const docName = docsById.get(e.document_id) ?? 'dokumen'
+    const loc = e.page != null ? ` (hal. ${e.page})` : ''
+    return `${i + 1}. ${e.heading}${loc} — [${docName}]`
+  })
+
+  const contentForLLM = `Berikut struktur/outline lengkap dokumen yang diupload (${entries.length} heading):\n\n${lines.join('\n')}\n\nGunakan daftar ini untuk menyusun daftar isi atau menjawab pertanyaan tentang struktur dokumen. Jika user minta daftar isi formal, susun ulang dengan formatting yang rapi dalam Bahasa Indonesia.`
+  return { count: entries.length, docs, contentForLLM }
+}
+
 export function buildRagSystemMessage(
   chunks: RetrievedChunk[],
   docsById: Map<string, string>,

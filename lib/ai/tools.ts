@@ -2,10 +2,13 @@ import type { ChatCompletionTool } from 'openai/resources/chat/completions'
 import { domainOf, tavilyExtract, tavilySearch, truncate } from './tavily'
 import {
   buildRagSystemMessage,
+  execRetrieveOutline,
   retrieveCombinedChunks,
   type RetrievedChunk,
   type RetrievedDoc,
 } from '@/lib/rag/retrieve'
+
+export { execRetrieveOutline }
 import { countWords } from '@/lib/rag/parse'
 import { createAdminClient } from '@/lib/supabase/admin'
 import type { CanvasMode, CanvasRevisionResult } from '@/types/canvas'
@@ -101,6 +104,16 @@ const RETRIEVE_DOCS_TOOL: ChatCompletionTool = {
   },
 }
 
+const RETRIEVE_OUTLINE_TOOL: ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'retrieve_outline',
+    description:
+      'Ambil struktur/outline lengkap (semua heading/judul bab) dari dokumen yang diupload. WAJIB pakai tool ini saat user minta: daftar isi, struktur dokumen, bab apa saja yang ada, outline, atau pertanyaan yang butuh gambaran keseluruhan dokumen. JANGAN pakai retrieve_documents untuk kasus ini karena hanya mengambil sebagian kecil berdasarkan kemiripan semantik.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+}
+
 const WRITE_CANVAS_TOOL: ChatCompletionTool = {
   type: 'function',
   function: {
@@ -143,6 +156,7 @@ export function buildTools(opts: {
   }
   if (opts.ragAvailable) {
     tools.push(RETRIEVE_DOCS_TOOL)
+    tools.push(RETRIEVE_OUTLINE_TOOL)
   }
   if (opts.canvasEnabled) {
     tools.push(WRITE_CANVAS_TOOL)

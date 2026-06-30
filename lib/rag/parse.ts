@@ -48,18 +48,33 @@ export async function parseDocument(
   return parseText(text, isMd)
 }
 
+function looksLikeHeading(text: string): boolean {
+  const trimmed = text.trim()
+  if (trimmed.length < 2 || trimmed.length > 120) return false
+  if (/^BAB\s+[IVXLCDM0-9]+/i.test(trimmed)) return true
+  if (/^\d+(\.\d+){0,3}\s+\S/.test(trimmed) && trimmed.length <= 80) return true
+  if (trimmed === trimmed.toUpperCase() && /[A-Z]/.test(trimmed) && trimmed.length <= 80) return true
+  return false
+}
+
 async function parsePdf(buffer: ArrayBuffer): Promise<ParseResult> {
   const pdf = await getDocumentProxy(new Uint8Array(buffer))
   const { text, totalPages } = await extractText(pdf, { mergePages: false })
   const pages = Array.isArray(text) ? text : [text]
   const blocks: ParsedBlock[] = []
+  let currentHeading: string | null = null
   pages.forEach((pageText, idx) => {
     const paragraphs = pageText
       .split(/\n\s*\n+/)
       .map((s) => s.trim())
       .filter(Boolean)
     for (const para of paragraphs) {
-      blocks.push({ text: para, page: idx + 1 })
+      if (looksLikeHeading(para)) {
+        currentHeading = para
+        blocks.push({ text: para, page: idx + 1, heading: para })
+      } else {
+        blocks.push({ text: para, page: idx + 1, heading: currentHeading })
+      }
     }
   })
   return { blocks, pageCount: totalPages }

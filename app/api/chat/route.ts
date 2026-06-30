@@ -9,6 +9,7 @@ import { toOpenAIMessages } from '@/lib/ai/messages'
 import {
   buildTools,
   execRetrieveDocs,
+  execRetrieveOutline,
   execWebExtract,
   execWebSearch,
   execWriteCanvas,
@@ -370,6 +371,22 @@ export async function POST(req: Request) {
                     { query },
                     { conversationId, projectId },
                   )
+                  send({
+                    type: 'rag.complete',
+                    messageId: assistantMessageId,
+                    count: result.count,
+                    docs: result.docs,
+                  })
+                  return { toolCallId, content: result.contentForLLM }
+                }
+
+                if (tc.name === 'retrieve_outline') {
+                  send({
+                    type: 'rag.start',
+                    messageId: assistantMessageId,
+                    query: 'outline dokumen',
+                  })
+                  const result = await execRetrieveOutline({ conversationId, projectId })
                   send({
                     type: 'rag.complete',
                     messageId: assistantMessageId,
