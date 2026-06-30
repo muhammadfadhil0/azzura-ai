@@ -6,9 +6,10 @@ export const EMBEDDING_MODEL =
   process.env.ADACODE_EMBEDDING_MODEL ??
   'text-embedding-3-small'
 
-const BATCH_SIZE = 96
-const MAX_RETRIES = 4
-const RETRY_BASE_MS = 1000
+const BATCH_SIZE = 32
+const MAX_RETRIES = 6
+const RETRY_BASE_MS = 2000
+const INTER_BATCH_DELAY_MS = 500
 
 let _embedClient: OpenAI | null = null
 
@@ -60,6 +61,7 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
   const client = getEmbedClient()
   const out: number[][] = []
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    if (i > 0) await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS))
     const batch = texts.slice(i, i + BATCH_SIZE)
     const embeddings = await embedBatchWithRetry(client, batch)
     out.push(...embeddings)
