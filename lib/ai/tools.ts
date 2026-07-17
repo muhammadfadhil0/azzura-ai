@@ -12,6 +12,7 @@ export { execRetrieveOutline }
 import { countWords } from '@/lib/rag/parse'
 import { createAdminClient } from '@/lib/supabase/admin'
 import type { CanvasMode, CanvasRevisionResult } from '@/types/canvas'
+import { adacode, ADACODE_MODEL } from './adacode'
 
 const EXTRACT_TOP_N = 4
 const EXTRACT_CHAR_LIMIT = 6000
@@ -104,6 +105,30 @@ const RETRIEVE_DOCS_TOOL: ChatCompletionTool = {
   },
 }
 
+const ANALYZE_FULL_DOCUMENT_TOOL: ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'analyze_full_document',
+    description:
+      'Analisis menyeluruh seluruh isi dokumen menggunakan pendekatan map-reduce. Tool ini membaca SEMUA chunk dokumen (bukan hanya yang relevan secara semantik), mengelompokkannya per heading/bab, lalu meringkas/menganalisis tiap bab secara paralel sebelum menggabungkan hasilnya. Cocok untuk tugas yang butuh pemahaman holistik.\n\nKAPAN PAKAI vs retrieve_documents:\n- retrieve_documents: untuk pertanyaan SPESIFIK (fakta, definisi, bagian tertentu). Contoh trigger: "apa definisi X di dokumen?", "bagaimana metodologi yang dipakai?", "kapan tanggal Y?".\n- analyze_full_document: untuk permintaan ANALISIS MENYELURUH. Contoh trigger: "analisis dokumen ini secara detail", "buat ringkasan komprehensif tiap bab", "identifikasi gap/kelemahan di seluruh dokumen", "bantu kembangkan dokumen ini jadi draft lengkap", "bandingkan temuan di bab 2 vs bab 4 secara mendalam".\n\nPENTING — parameter "instruction":\n1. Deskripsikan secara eksplisit apa yang harus dilakukan pada dokumen. Contoh: "Ringkas setiap bab dalam 3-5 poin utama, lalu identifikasi kesenjangan metodologis."\n2. Jangan kosongkan instruction — tool butuh tahu apa yang harus dianalisis.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        documentId: {
+          type: 'string',
+          description: 'ID dokumen spesifik yang ingin dianalisis. Ambil dari daftar dokumen yang tersedia.',
+        },
+        instruction: {
+          type: 'string',
+          description: 'Instruksi analisis yang spesifik dan deskriptif. Jelaskan apa yang harus dilakukan pada seluruh isi dokumen (mis: "ringkas tiap bab dan identifikasi gap metodologi").',
+        },
+      },
+      required: ['documentId', 'instruction'],
+    },
+  },
+}
+
 const RETRIEVE_OUTLINE_TOOL: ChatCompletionTool = {
   type: 'function',
   function: {
@@ -157,6 +182,7 @@ export function buildTools(opts: {
   if (opts.ragAvailable) {
     tools.push(RETRIEVE_DOCS_TOOL)
     tools.push(RETRIEVE_OUTLINE_TOOL)
+    tools.push(ANALYZE_FULL_DOCUMENT_TOOL)
   }
   if (opts.canvasEnabled) {
     tools.push(WRITE_CANVAS_TOOL)
@@ -373,6 +399,15 @@ export interface RagExecResult {
   contentForLLM: string
 }
 
+export interface AnalyzeFullDocumentResult {
+  documentId: string
+  documentName: string
+  instruction: string
+  sectionSummaries: string
+  totalChunksProcessed: number
+  contentForLLM: string
+}
+
 export async function execRetrieveDocs(
   args: { query: string },
   ctx: { conversationId: string | null; projectId: string | null },
@@ -434,6 +469,186 @@ export async function execRetrieveDocs(
     count: chunks.length,
     docs,
     chunks,
+    contentForLLM,
+  }
+}
+
+export async function execAnalyzeFullDocument(
+  args: { documentId: string; instruction: string },
+  ctx: { conversationId: string | null; projectId: string | null },
+): Promise<AnalyzeFullDocumentResult> {
+  const documentId = args.documentId?.trim() ?? ''
+  const instruction = args.instruction?.trim() ?? ''
+
+  if (!documentId) {
+    return {
+      documentId: '',
+      documentName: '',
+      instruction: '',
+      sectionSummaries: '',
+      totalChunksProcessed: 0,
+      contentForLLM: 'TOOL ERROR: parameter "documentId" kosong. Sebutkan dokumen mana yang ingin dianalisis.',
+    }
+  }
+
+  if (!instruction) {
+    return {
+      documentId,
+      documentName: '',
+      instruction: '',
+      sectionSummaries: '',
+      totalChunksProcessed: 0,
+      contentForLLM: 'TOOL ERROR: parameter "instruction" kosong. Deskripsikan apa yang harus dianalisis dari dokumen.',
+    }
+  }
+
+  const admin = createAdminClient()
+
+  // Fetch document metadata
+  const { data: docRows, error: docErr } = await admin
+    .from('documents')
+    .select('id, name, conversation_id, project_id')
+    .eq('id', documentId)
+    .maybeSingle()
+  if (docErr || !docRows) {
+    return {
+      documentId,
+      documentName: '',
+      instruction,
+      sectionSummaries: '',
+      totalChunksProcessed: 0,
+      contentForLLM: `TOOL ERROR: dokumen dengan ID "${documentId}" tidak ditemukan. Cek apakah ID dokumen sudah benar.`,
+    }
+  }
+
+  const docName = docRows.name ?? documentId
+  const docConvId = (docRows as any)?.conversation_id as string | null
+  const docProjId = (docRows as any)?.project_id as string | null
+
+  // Fetch ALL chunks for this document, ordered by chunk_index
+  const { data: allChunks, error: chunksErr } = await admin
+    .from('document_chunks')
+    .select('chunk_index, content, heading, page, paragraph_index')
+    .eq('document_id', documentId)
+    .order('chunk_index', { ascending: true })
+  if (chunksErr || !allChunks) {
+    return {
+      documentId,
+      documentName: docName,
+      instruction,
+      sectionSummaries: '',
+      totalChunksProcessed: 0,
+      contentForLLM: `TOOL ERROR: gagal mengambil chunk dokumen "${docName}".`,
+    }
+  }
+
+  const chunks = allChunks as Array<{
+    chunk_index: number
+    content: string
+    heading: string | null
+    page: number | null
+    paragraph_index: number | null
+  }>
+
+  if (chunks.length === 0) {
+    return {
+      documentId,
+      documentName: docName,
+      instruction,
+      sectionSummaries: '',
+      totalChunksProcessed: 0,
+      contentForLLM: `Dokumen "${docName}" tidak memiliki chunk yang tersisa. Dokumen mungkin kosong atau gagal diindeks.`,
+    }
+  }
+
+  // Group chunks by heading
+  const sections: Map<string | null, typeof chunks> = new Map()
+  for (const chunk of chunks) {
+    const key = chunk.heading
+    if (!sections.has(key)) {
+      sections.set(key, [])
+    }
+    sections.get(key)!.push(chunk)
+  }
+
+  // Build section summaries using map-reduce: each section gets a parallel LLM call
+  const sectionEntries = Array.from(sections.entries())
+
+  const summaryPromises = sectionEntries.map(async ([heading, sectionChunks]) => {
+    const sectionText = sectionChunks
+      .map((c) => {
+        let meta = ''
+        if (c.page !== null) meta = `[hal. ${c.page}]`
+        else if (c.paragraph_index !== null) meta = `[para. ${c.paragraph_index}]`
+        return meta ? `${meta} ${c.content}` : c.content
+      })
+      .join('\n\n')
+
+    const systemPrompt = `Kamu adalah asisten analisis dokumen. Tugasmu adalah memproses isi bagian dokumen dan menghasilkan ringkasan/analisis sesuai instruksi user.
+
+ATURAN:
+- Jawab dalam Bahasa Indonesia kecuali instruksi meminta bahasa lain.
+- Fokus pada informasi yang ada di teks bagian ini. Jangan menambahkan pengetahuan eksternal.
+- Format output dengan heading yang jelas dan bullet points jika relevan.`
+
+    const userPrompt = `INSTRUKSI ANALISIS: ${instruction}
+
+=== ISI BAGIAN ===
+${heading ? `Heading: ${heading}` : '(bagian tanpa heading)'}
+
+${sectionText}
+
+Ringkasan/hasil analisis untuk bagian ini sesuai instruksi di atas:`
+
+    try {
+      const response = await adacode.chat.completions.create({
+        model: ADACODE_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        max_tokens: 1500,
+        temperature: 0.3,
+      })
+      const summary = response.choices[0]?.message?.content ?? '(gagal menghasilkan ringkasan)'
+      return { heading, summary, truncated: false }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[analyze_full_document] LLM call failed for heading "${heading}":`, msg)
+      return { heading, summary: `(ERROR: ${msg})`, truncated: false }
+    }
+  })
+
+  const results = await Promise.allSettled(summaryPromises)
+  const summaries = results
+    .filter((r): r is PromiseFulfilledResult<{ heading: string | null; summary: string; truncated: boolean }> => r.status === 'fulfilled')
+    .map((r) => r.value)
+
+  // Build the combined section summaries
+  const sectionLines = summaries.map((s) => {
+    const label = s.heading ? `### ${s.heading}` : '### Bagian Tanpa Heading'
+    return `${label}\n\n${s.summary}`
+  })
+
+  const sectionSummaries = sectionLines.join('\n\n---\n\n')
+
+  const contentForLLM = `HASIL ANALISIS MENYELURUH DOKUMEN: "${docName}" (${chunks.length} chunks diproses, ${summaries.length} section)
+
+INSTRUKSI USER: ${instruction}
+
+=== RINGKASAN PER SECTION ===
+
+${sectionSummaries}
+
+=== INSTRUKSI UNTUK MODEL UTAMA ===
+Gunakan ringkasan per section di atas untuk melakukan sintesis akhir dan menjawab pertanyaan user. Ringkasan setiap section sudah dihasilkan oleh model analisis khusus. Sekarang gabungkan wawasan dari semua section untuk memberikan jawaban komprehensif sesuai instruksi user di atas. Jika instruksi user meminta output format tertentu (misal: draft, laporan, rekomendasi), susun jawaban akhir sesuai format tersebut berdasarkan ringkasan section di atas.`
+
+  return {
+    documentId,
+    documentName: docName,
+    instruction,
+    sectionSummaries,
+    totalChunksProcessed: chunks.length,
     contentForLLM,
   }
 }

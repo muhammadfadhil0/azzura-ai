@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { embedTexts } from '@/lib/ai/embeddings'
 import { truncate } from '@/lib/ai/tavily'
 
-const CHUNK_TRUNCATE_CHARS = 1200
+const CHUNK_TRUNCATE_CHARS = 3200
 
 export interface RetrievedChunk {
   id: string

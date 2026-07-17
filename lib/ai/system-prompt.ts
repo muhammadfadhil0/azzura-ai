@@ -61,14 +61,26 @@ TOOL: \`web_extract(urls)\` — tersedia. Pakai hanya kalau kamu sudah punya URL
       : ''
     toolBlocks.push(`TOOL: \`retrieve_documents(query)\` — tersedia. User memiliki dokumen/catatan di percakapan/project ini.${docList}
 
-ATURAN KRITIS — WAJIB panggil \`retrieve_documents\` LEBIH DULU sebelum menjawab apapun yang berkaitan dengan:
-- Topik, isi, atau informasi yang mungkin ada di dokumen user
-- Pertanyaan faktual atau spesifik (nama, tanggal, angka, prosedur, definisi)
-- Ringkasan atau penjelasan tentang konten project
-- Pertanyaan "apa", "siapa", "bagaimana", "kapan" yang jawabannya bisa ada di dokumen
-JANGAN langsung menjawab dari pengetahuan umum jika dokumen tersedia — cek dulu.
+ATURAN — KAPAN PAKAI retrieve_documents vs analyze_full_document:
 
-Setelah hasilnya datang, jawab dengan sitasi marker \`[doc:DOCUMENT_ID#p=N]\` seperti yang dijelaskan di tool result. Jika retrieve_documents tidak menemukan info relevan, baru boleh jawab dari pengetahuan umum dan beritahu user.`)
+PAKAI \`retrieve_documents(query)\` UNTUK PERTANYAAN SPESIFIK:
+- Mencari fakta tertentu: "apa definisi X?", "kapan tanggal Y?", "siapa yang bertanggung jawab?"
+- Pertanyaan tentang bagian/konsep spesifik: "bagaimana metodologi yang dipakai?", "apa temuan di bab 3?"
+- Pertanyaan "apa", "siapa", "bagaimana", "kapan" yang jawabannya bisa ada di dokumen
+Contoh trigger: "apa poin utama bab 2?", "berapa jumlah responden?", "apa gap penelitian ini?"
+
+PAKAI \`analyze_full_document(documentId, instruction)\` UNTUK ANALISIS MENYELURUH:
+- Permintaan analisis komprehensif: "analisis dokumen ini secara detail", "buat ringkasan menyeluruh"
+- Membutuhkan pemahaman holistik seluruh isi dokumen: "identifikasi kelemahan/gap di seluruh dokumen"
+- Meminta bantuan mengembangkan/menghasilkan draft berdasarkan seluruh isi: "bantu kembangkan jadi draft lengkap"
+- Perbandingan mendalam lintas banyak bagian: "bandingkan temuan bab 2 vs bab 4 secara mendalam"
+Contoh trigger: "ringkas semua bab", "analisis kritis dokumen ini", "buat laporan komprehensif berdasarkan dokumen"
+
+JANGAN salah pilih:
+- retrieve_documents TIDAK cocok untuk analisis menyeluruh — hanya ambil top-k chunk relevan.
+- analyze_full_document TIDAK cocok untuk pertanyaan spesifik cepat — terlalu berat dan lambat.
+
+Setelah retrieve_documents hasilnya datang, jawab dengan sitasi marker \`[doc:DOCUMENT_ID#p=N]\` seperti yang dijelaskan di tool result. Jika retrieve_documents tidak menemukan info relevan, baru boleh jawab dari pengetahuan umum dan beritahu user.`)
   }
 
   if (canvas) {

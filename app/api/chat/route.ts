@@ -8,6 +8,7 @@ import { gemini, isGeminiModel } from '@/lib/ai/gemini'
 import { toOpenAIMessages } from '@/lib/ai/messages'
 import {
   buildTools,
+  execAnalyzeFullDocument,
   execRetrieveDocs,
   execRetrieveOutline,
   execWebExtract,
@@ -392,6 +393,29 @@ export async function POST(req: Request) {
                     messageId: assistantMessageId,
                     count: result.count,
                     docs: result.docs,
+                  })
+                  return { toolCallId, content: result.contentForLLM }
+                }
+
+                if (tc.name === 'analyze_full_document') {
+                  const docId =
+                    typeof args.documentId === 'string' ? args.documentId : ''
+                  const instruction =
+                    typeof args.instruction === 'string' ? args.instruction : ''
+                  send({
+                    type: 'rag.start',
+                    messageId: assistantMessageId,
+                    query: `analyze_full_document: ${instruction.slice(0, 100)}`,
+                  })
+                  const result = await execAnalyzeFullDocument(
+                    { documentId: docId, instruction },
+                    { conversationId, projectId },
+                  )
+                  send({
+                    type: 'rag.complete',
+                    messageId: assistantMessageId,
+                    count: result.totalChunksProcessed,
+                    docs: [{ id: result.documentId, name: result.documentName }],
                   })
                   return { toolCallId, content: result.contentForLLM }
                 }
